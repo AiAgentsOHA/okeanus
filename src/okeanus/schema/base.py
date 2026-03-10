@@ -187,7 +187,7 @@ class ObservationBase(BaseModel):
         else:
             geometry = Polygon(**geom)
         properties = self.model_dump(exclude={"geometry", "id"})
-        return Feature(id=str(self.id), geometry=geometry, properties=properties)
+        return Feature(type="Feature", id=str(self.id), geometry=geometry, properties=properties)
 
 
 class ObservationCreate(BaseModel):
