@@ -1,4 +1,4 @@
-"""Alembic environment configuration for async SQLAlchemy."""
+"""Alembic environment configuration for async SQLAlchemy with PostGIS."""
 
 import asyncio
 import os
@@ -7,6 +7,14 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
+
+# Import all models so metadata is populated before autogenerate
+from okeanus.schema.base import Base
+import okeanus.schema.physical  # noqa: F401
+import okeanus.schema.vessel  # noqa: F401
+import okeanus.schema.acoustic  # noqa: F401
+import okeanus.schema.biological  # noqa: F401
+import okeanus.schema.satellite  # noqa: F401
 
 config = context.config
 
@@ -18,7 +26,7 @@ database_url = os.getenv("DATABASE_URL", "")
 if database_url:
     config.set_main_option("sqlalchemy.url", database_url)
 
-target_metadata = None
+target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:

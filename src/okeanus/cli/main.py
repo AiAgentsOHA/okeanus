@@ -2,6 +2,9 @@
 
 import click
 
+from okeanus import __version__
+from okeanus.config import settings
+
 
 @click.group()
 @click.version_option(package_name="okeanus")
@@ -10,8 +13,63 @@ def cli() -> None:
 
 
 @cli.command()
-def serve() -> None:
+@click.option("--host", default=None, help="Bind host (default from config)")
+@click.option("--port", default=None, type=int, help="Bind port (default from config)")
+@click.option("--reload", is_flag=True, help="Enable auto-reload for development")
+def serve(host: str | None, port: int | None, reload: bool) -> None:
     """Start the API server."""
     import uvicorn
 
-    uvicorn.run("okeanus.main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run(
+        "okeanus.main:app",
+        host=host or settings.api_host,
+        port=port or settings.api_port,
+        reload=reload or settings.api_reload,
+        log_level=settings.log_level.lower(),
+    )
+
+
+@cli.command()
+def sources() -> None:
+    """List available data sources and their configuration status."""
+    click.echo(f"Okeanus v{__version__} -- Data Sources\n")
+    for source in settings.configured_sources():
+        status = click.style("configured", fg="green") if source["configured"] else click.style("not configured", fg="yellow")
+        click.echo(f"  {source['name']:<20} {status}")
+
+
+@cli.command()
+def health() -> None:
+    """Check system health by hitting the local API."""
+    import httpx
+
+    url = f"http://{settings.api_host}:{settings.api_port}/health"
+    try:
+        resp = httpx.get(url, timeout=5.0)
+        data = resp.json()
+        status_color = "green" if data.get("status") == "ok" else "red"
+        click.echo(f"Status:  {click.style(data['status'], fg=status_color)}")
+        click.echo(f"Version: {data.get('version', 'unknown')}")
+    except httpx.RequestError:
+        click.echo(click.style("Error: Could not reach API server", fg="red"))
+        raise SystemExit(1)
+
+
+@cli.command()
+@click.argument("source")
+@click.option("--bbox", default=None, help="Bounding box: west,south,east,north")
+@click.option("--time-start", default=None, help="Start time (ISO 8601)")
+@click.option("--time-end", default=None, help="End time (ISO 8601)")
+def fetch(source: str, bbox: str | None, time_start: str | None, time_end: str | None) -> None:
+    """Fetch data from a source adapter.
+
+    SOURCE is the name of the adapter (e.g. cmems, ais, obis).
+    """
+    click.echo(f"Fetching from '{source}'...")
+    if bbox:
+        click.echo(f"  bbox: {bbox}")
+    if time_start:
+        click.echo(f"  time_start: {time_start}")
+    if time_end:
+        click.echo(f"  time_end: {time_end}")
+    click.echo(click.style("Adapter framework not yet implemented -- coming soon.", fg="yellow"))

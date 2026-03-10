@@ -39,5 +39,22 @@ class Settings(BaseSettings):
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
+    def configured_sources(self) -> list[dict[str, str]]:
+        """Return a list of data sources with their configuration status."""
+        sources = [
+            {"name": "CMEMS", "configured": bool(self.cmems_username and self.cmems_password)},
+            {"name": "AIS", "configured": bool(self.ais_api_key)},
+            {"name": "OBIS", "configured": bool(self.obis_api_key)},
+            {"name": "GBIF", "configured": bool(self.gbif_username and self.gbif_password)},
+            {"name": "Copernicus", "configured": bool(self.copernicus_api_key)},
+            {
+                "name": "Sentinel Hub",
+                "configured": bool(
+                    self.sentinel_hub_client_id and self.sentinel_hub_client_secret
+                ),
+            },
+        ]
+        return sources
+
 
 settings = Settings()
