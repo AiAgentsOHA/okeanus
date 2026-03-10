@@ -27,34 +27,74 @@ class Settings(BaseSettings):
     debug: bool = False
 
     # -- External data-source API keys --
+    # CMEMS (registration required)
     cmems_username: str = ""
     cmems_password: str = ""
+    # AISStream (free key at aisstream.io)
     ais_api_key: str = ""
-    obis_api_key: str = ""
-    gbif_username: str = ""
-    gbif_password: str = ""
+    # Global Fishing Watch (free key at globalfishingwatch.org)
+    gfw_api_key: str = ""
+    # Ocean Networks Canada (free token at oceannetworks.ca)
+    onc_api_token: str = ""
+    # WDPA / Protected Planet (free token at protectedplanet.net)
+    wdpa_api_token: str = ""
+    # Copernicus Data Space
     copernicus_api_key: str = ""
+    # Sentinel Hub
     sentinel_hub_client_id: str = ""
     sentinel_hub_client_secret: str = ""
+    # OBIS (optional — works without key but key gives higher rate limits)
+    obis_api_key: str = ""
+    # GBIF (optional — works without auth)
+    gbif_username: str = ""
+    gbif_password: str = ""
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
-    def configured_sources(self) -> list[dict[str, str]]:
+    def configured_sources(self) -> list[dict[str, str | bool]]:
         """Return a list of data sources with their configuration status."""
-        sources = [
-            {"name": "CMEMS", "configured": bool(self.cmems_username and self.cmems_password)},
-            {"name": "AIS", "configured": bool(self.ais_api_key)},
-            {"name": "OBIS", "configured": bool(self.obis_api_key)},
-            {"name": "GBIF", "configured": bool(self.gbif_username and self.gbif_password)},
-            {"name": "Copernicus", "configured": bool(self.copernicus_api_key)},
+        return [
+            # No auth required (always available)
+            {"name": "OBIS", "configured": True, "auth": "none"},
+            {"name": "GBIF", "configured": True, "auth": "none"},
+            {"name": "Argovis", "configured": True, "auth": "none"},
+            {"name": "NOAA CO-OPS", "configured": True, "auth": "none"},
+            {"name": "NDBC", "configured": True, "auth": "none"},
+            {"name": "ERDDAP", "configured": True, "auth": "none"},
+            {"name": "Marine Regions", "configured": True, "auth": "none"},
+            {"name": "WoRMS", "configured": True, "auth": "none"},
+            {"name": "OpenSanctions", "configured": True, "auth": "none"},
+            # Free registration required
+            {
+                "name": "CMEMS",
+                "configured": bool(self.cmems_username and self.cmems_password),
+                "auth": "credentials",
+            },
+            {
+                "name": "AISStream",
+                "configured": bool(self.ais_api_key),
+                "auth": "api_key",
+            },
+            {
+                "name": "Global Fishing Watch",
+                "configured": bool(self.gfw_api_key),
+                "auth": "api_key",
+            },
+            {
+                "name": "ONC Hydrophones",
+                "configured": bool(self.onc_api_token),
+                "auth": "api_token",
+            },
+            {"name": "WDPA", "configured": bool(self.wdpa_api_token), "auth": "api_token"},
+            {"name": "Copernicus", "configured": bool(self.copernicus_api_key), "auth": "api_key"},
             {
                 "name": "Sentinel Hub",
                 "configured": bool(
                     self.sentinel_hub_client_id and self.sentinel_hub_client_secret
                 ),
+                "auth": "oauth",
             },
         ]
-        return sources
 
 
 settings = Settings()

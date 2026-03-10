@@ -35,10 +35,10 @@ def sources() -> None:
     click.echo(f"Okeanus v{__version__} -- Data Sources\n")
     for source in settings.configured_sources():
         if source["configured"]:
-            status = click.style("configured", fg="green")
+            status = click.style("ready", fg="green")
         else:
-            status = click.style("not configured", fg="yellow")
-        click.echo(f"  {source['name']:<20} {status}")
+            status = click.style(f"needs {source['auth']}", fg="yellow")
+        click.echo(f"  {source['name']:<25} {status}")
 
 
 @cli.command()
@@ -63,41 +63,59 @@ def health() -> None:
 @click.option("--bbox", default=None, help="Bounding box: west,south,east,north")
 @click.option("--time-start", default=None, help="Start time (ISO 8601)")
 @click.option("--time-end", default=None, help="End time (ISO 8601)")
-def fetch(source: str, bbox: str | None, time_start: str | None, time_end: str | None) -> None:
-    """Fetch data from a source adapter.
+@click.option("--limit", default=500, help="Max records to fetch")
+@click.option("--no-store", is_flag=True, help="Don't store in PostGIS")
+def fetch(
+    source: str,
+    bbox: str | None,
+    time_start: str | None,
+    time_end: str | None,
+    limit: int,
+    no_store: bool,
+) -> None:
+    """Fetch data from a source adapter and store in PostGIS.
 
-    SOURCE is the name of the adapter (e.g. cmems, ais, obis).
+    SOURCE is the adapter name (obis, gbif, argovis, noaa_coops, erddap, etc.)
     """
     import asyncio
 
-    from okeanus.api.ingest import _dict_to_observation
+    from okeanus.api.ingest import _build_adapter, _dict_to_observation
     from okeanus.db.postgres import async_session_factory
 
     async def _run() -> int:
-        if source == "cmems":
-            from okeanus.adapters.cmems import CmemsAdapter
+        adapter = _build_adapter(source)
+        if adapter is None:
+            from okeanus.adapters import ADAPTER_REGISTRY
 
-            adapter = CmemsAdapter(
-                username=settings.cmems_username,
-                password=settings.cmems_password,
-            )
-        else:
+            available = sorted(ADAPTER_REGISTRY.keys())
             click.echo(click.style(f"Unknown source: {source}", fg="red"))
+            click.echo(f"Available: {', '.join(available)}")
             raise SystemExit(1)
 
         from datetime import UTC, datetime, timedelta
 
-        ts = (datetime.fromisoformat(time_start)
-              if time_start else datetime.now(UTC) - timedelta(days=7))
-        te = datetime.fromisoformat(time_end) if time_end else datetime.now(UTC)
-        b = tuple(float(x) for x in bbox.split(",")) if bbox else (-10.0, 35.0, 0.0, 45.0)
+        ts = (
+            datetime.fromisoformat(time_start)
+            if time_start
+            else datetime.now(UTC) - timedelta(days=7)
+        )
+        te = (
+            datetime.fromisoformat(time_end)
+            if time_end
+            else datetime.now(UTC)
+        )
+        b = (
+            tuple(float(x) for x in bbox.split(","))
+            if bbox
+            else (-10.0, 35.0, 0.0, 45.0)
+        )
 
         click.echo(f"Fetching from '{source}' bbox={b} {ts} -> {te}")
-        records = await adapter.fetch(b, ts, te)
+        records = await adapter.fetch(b, ts, te, limit=limit)
         click.echo(f"  Got {len(records)} records")
 
-        if records:
-            observations = [_dict_to_observation(r) for r in records]
+        if records and not no_store:
+            observations = [_dict_to_observation(r.copy()) for r in records]
             async with async_session_factory() as session:
                 session.add_all(observations)
                 await session.commit()

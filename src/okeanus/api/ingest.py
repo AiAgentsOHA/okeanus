@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Query
 from geoalchemy2.shape import from_shape
 from shapely.geometry import shape
 
+from okeanus.adapters import ADAPTER_REGISTRY
 from okeanus.config import settings
 from okeanus.db.postgres import async_session_factory
 from okeanus.schema.base import Observation
@@ -39,6 +40,42 @@ def _dict_to_observation(record: dict[str, Any]) -> Observation:
     return obs
 
 
+def _build_adapter(source: str) -> Any:
+    """Instantiate the right adapter with credentials from settings."""
+    adapter_cls = ADAPTER_REGISTRY.get(source)
+    if adapter_cls is None:
+        return None
+
+    # Pass credentials based on source
+    kwargs: dict[str, Any] = {}
+    if source == "cmems":
+        kwargs = {"username": settings.cmems_username, "password": settings.cmems_password}
+    elif source == "aisstream":
+        kwargs = {"api_key": settings.ais_api_key}
+    elif source == "gfw":
+        kwargs = {"api_key": settings.gfw_api_key}
+    elif source == "onc":
+        kwargs = {"api_token": settings.onc_api_token}
+    elif source == "wdpa":
+        kwargs = {"api_token": settings.wdpa_api_token}
+
+    return adapter_cls(**kwargs)
+
+
+@router.get("/sources")
+async def list_sources() -> dict[str, Any]:
+    """List all available data sources and their auth requirements."""
+    sources = []
+    for name, cls in ADAPTER_REGISTRY.items():
+        adapter = cls()
+        sources.append({
+            "name": name,
+            "description": cls.__doc__.split("\n")[0] if cls.__doc__ else "",
+            "update_frequency": adapter.update_frequency,
+        })
+    return {"sources": sources, "total": len(sources)}
+
+
 @router.post("/fetch/{source}")
 async def ingest_from_source(
     source: str,
@@ -48,42 +85,45 @@ async def ingest_from_source(
     ],
     time_start: Annotated[datetime, Query(description="Start time (ISO 8601)")],
     time_end: Annotated[datetime, Query(description="End time (ISO 8601)")],
-    variable: Annotated[str | None, Query(description="Variable (e.g. sst, currents)")] = None,
+    variable: Annotated[
+        str | None, Query(description="Variable or sub-parameter")
+    ] = None,
+    limit: Annotated[int, Query(ge=1, le=10000)] = 500,
+    store: Annotated[
+        bool, Query(description="Store results in PostGIS (default true)")
+    ] = True,
 ) -> dict[str, Any]:
-    """Fetch data from an adapter and store in PostGIS.
+    """Fetch data from any registered adapter and optionally store in PostGIS."""
+    adapter = _build_adapter(source)
+    if adapter is None:
+        available = sorted(ADAPTER_REGISTRY.keys())
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown source '{source}'. Available: {', '.join(available)}",
+        )
 
-    Returns the count of observations ingested.
-    """
     w, s, e, n = [float(x) for x in bbox.split(",")]
     bbox_tuple = (w, s, e, n)
 
-    if source == "cmems":
-        from okeanus.adapters.cmems import CmemsAdapter
-
-        adapter = CmemsAdapter(
-            username=settings.cmems_username,
-            password=settings.cmems_password,
-        )
-    else:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unknown source '{source}'. Available: cmems",
-        )
-
-    params: dict[str, Any] = {}
+    extra_params: dict[str, Any] = {"limit": limit}
     if variable:
-        params["variable"] = variable
+        extra_params["variable"] = variable
 
-    records = await adapter.fetch(bbox_tuple, time_start, time_end, **params)
+    records = await adapter.fetch(bbox_tuple, time_start, time_end, **extra_params)
 
     if not records:
         return {"source": source, "ingested": 0, "message": "No records returned"}
 
-    observations = [_dict_to_observation(r) for r in records]
+    if store:
+        observations = [_dict_to_observation(r.copy()) for r in records]
+        async with async_session_factory() as session:
+            session.add_all(observations)
+            await session.commit()
 
-    async with async_session_factory() as session:
-        session.add_all(observations)
-        await session.commit()
-
-    logger.info("Ingested %d records from %s", len(observations), source)
-    return {"source": source, "ingested": len(observations)}
+    logger.info("Ingested %d records from %s", len(records), source)
+    return {
+        "source": source,
+        "ingested": len(records),
+        "stored": store,
+        "sample": records[0] if records else None,
+    }
