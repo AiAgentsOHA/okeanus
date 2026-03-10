@@ -6,17 +6,15 @@ Sources: CMEMS, HYCOM, NOAA buoys, Argo floats.
 from __future__ import annotations
 
 import enum
-from datetime import datetime
-from typing import Any
 
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict
 from sqlalchemy import Enum, Float, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from okeanus.schema.base import Observation, ObservationBase, ObservationCreate
 
 
-class PhysicalParameter(str, enum.Enum):
+class PhysicalParameter(enum.StrEnum):
     """Measured physical parameter type."""
 
     SST = "SST"

@@ -16,7 +16,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from okeanus.schema.base import Observation, ObservationBase, ObservationCreate
 
 
-class OrbitDirection(str, enum.Enum):
+class OrbitDirection(enum.StrEnum):
     """Satellite orbit pass direction."""
 
     ASC = "ASC"

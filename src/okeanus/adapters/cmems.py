@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -126,7 +126,7 @@ class CmemsAdapter(BaseAdapter):
     ) -> dict[str, Any]:
         lon = record.get("longitude", record.get("lon", 0.0))
         lat = record.get("latitude", record.get("lat", 0.0))
-        ts = record.get("time", record.get("datetime", datetime.now(timezone.utc).isoformat()))
+        ts = record.get("time", record.get("datetime", datetime.now(UTC).isoformat()))
         if isinstance(ts, str):
             try:
                 ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))

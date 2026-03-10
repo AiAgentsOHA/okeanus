@@ -11,6 +11,7 @@ satellite) in a single spatially-indexed table.
 
 from alembic import op
 import sqlalchemy as sa
+from geoalchemy2 import Geometry
 from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
@@ -43,9 +44,7 @@ def upgrade() -> None:
         create_type=True,
     )
 
-    physical_parameter_enum.create(op.get_bind(), checkfirst=True)
-    observation_method_enum.create(op.get_bind(), checkfirst=True)
-    orbit_direction_enum.create(op.get_bind(), checkfirst=True)
+    # Enums are created automatically by create_table via create_type=True
 
     # ------------------------------------------------------------------
     # observations -- single-table inheritance for all observation types
@@ -62,7 +61,7 @@ def upgrade() -> None:
                   server_default=sa.text("gen_random_uuid()")),
         sa.Column("obs_type", sa.String(30), nullable=False),
         sa.Column("timestamp", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("geometry", sa.Column.__class__),  # placeholder, replaced below
+        sa.Column("geometry", Geometry("GEOMETRY", srid=4326), nullable=False),
         sa.Column("source_id", sa.String(255), nullable=False),
         sa.Column("source_name", sa.String(100), nullable=False),
         sa.Column("quality_score", sa.Float, nullable=True),
@@ -122,17 +121,6 @@ def upgrade() -> None:
         sa.Column("processing_level", sa.String(20), nullable=True),
         sa.Column("bands", postgresql.ARRAY(sa.String), nullable=True),
         sa.Column("scene_url", sa.String(500), nullable=True),
-    )
-
-    # Replace the placeholder geometry column with a real PostGIS column
-    op.execute(
-        "ALTER TABLE observations DROP COLUMN IF EXISTS geometry"
-    )
-    op.execute(
-        "SELECT AddGeometryColumn('public', 'observations', 'geometry', 4326, 'GEOMETRY', 2)"
-    )
-    op.execute(
-        "ALTER TABLE observations ALTER COLUMN geometry SET NOT NULL"
     )
 
     # ------------------------------------------------------------------

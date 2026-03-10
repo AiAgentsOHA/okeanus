@@ -12,7 +12,6 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from okeanus.schema.base import Observation, ObservationBase, ObservationCreate
 
-
 # ---------------------------------------------------------------------------
 # SQLAlchemy ORM model
 # ---------------------------------------------------------------------------

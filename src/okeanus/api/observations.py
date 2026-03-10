@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Query
@@ -42,7 +42,7 @@ def _mock_observations(
                 properties={
                     "obs_type": otype,
                     "timestamp": (
-                        time_start or datetime(2025, 1, 1, tzinfo=timezone.utc)
+                        time_start or datetime(2025, 1, 1, tzinfo=UTC)
                     ).isoformat(),
                     "source_name": source_name or "mock",
                     "source_id": f"mock-{i}",
@@ -96,7 +96,8 @@ async def list_observations(
 
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid obs_type '{obs_type}'. Must be one of: {', '.join(sorted(VALID_OBS_TYPES))}",
+            detail=f"Invalid obs_type '{obs_type}'. "
+            f"Must be one of: {', '.join(sorted(VALID_OBS_TYPES))}",
         )
 
     # MVP: return mock data (replace with real DB queries when connected)

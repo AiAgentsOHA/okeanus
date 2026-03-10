@@ -15,7 +15,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from okeanus.schema.base import Observation, ObservationBase, ObservationCreate
 
 
-class ObservationMethod(str, enum.Enum):
+class ObservationMethod(enum.StrEnum):
     """Method used to observe the organism."""
 
     VISUAL = "VISUAL"

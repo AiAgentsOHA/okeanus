@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query
@@ -21,7 +21,7 @@ def _mock_vessel(mmsi: int, lon: float, lat: float) -> Feature:
         properties={
             "mmsi": mmsi,
             "obs_type": "vessel",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "source_name": "mock-ais",
             "source_id": f"ais-{mmsi}",
             "ship_name": f"VESSEL-{mmsi}",

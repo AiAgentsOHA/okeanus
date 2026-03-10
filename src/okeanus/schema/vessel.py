@@ -6,14 +6,12 @@ Sources: terrestrial AIS, satellite AIS (S-AIS), coastal radar.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
 
 from pydantic import ConfigDict, Field
 from sqlalchemy import DateTime, Float, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from okeanus.schema.base import Observation, ObservationBase, ObservationCreate
-
 
 # ---------------------------------------------------------------------------
 # SQLAlchemy ORM model

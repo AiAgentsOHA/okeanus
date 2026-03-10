@@ -1,26 +1,15 @@
 """Domain schema models -- SQLAlchemy ORM + Pydantic types for all observation domains."""
 
+from okeanus.schema.acoustic import (
+    AcousticObservation,
+    AcousticObservationCreate,
+    AcousticObservationRead,
+)
 from okeanus.schema.base import (
     Base,
     Observation,
     ObservationBase,
     ObservationCreate,
-)
-from okeanus.schema.physical import (
-    PhysicalObservation,
-    PhysicalObservationCreate,
-    PhysicalObservationRead,
-    PhysicalParameter,
-)
-from okeanus.schema.vessel import (
-    VesselObservation,
-    VesselObservationCreate,
-    VesselObservationRead,
-)
-from okeanus.schema.acoustic import (
-    AcousticObservation,
-    AcousticObservationCreate,
-    AcousticObservationRead,
 )
 from okeanus.schema.biological import (
     BiologicalObservation,
@@ -28,11 +17,22 @@ from okeanus.schema.biological import (
     BiologicalObservationRead,
     ObservationMethod,
 )
+from okeanus.schema.physical import (
+    PhysicalObservation,
+    PhysicalObservationCreate,
+    PhysicalObservationRead,
+    PhysicalParameter,
+)
 from okeanus.schema.satellite import (
     OrbitDirection,
     SatelliteObservation,
     SatelliteObservationCreate,
     SatelliteObservationRead,
+)
+from okeanus.schema.vessel import (
+    VesselObservation,
+    VesselObservationCreate,
+    VesselObservationRead,
 )
 
 __all__ = [

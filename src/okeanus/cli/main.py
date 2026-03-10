@@ -34,7 +34,10 @@ def sources() -> None:
     """List available data sources and their configuration status."""
     click.echo(f"Okeanus v{__version__} -- Data Sources\n")
     for source in settings.configured_sources():
-        status = click.style("configured", fg="green") if source["configured"] else click.style("not configured", fg="yellow")
+        if source["configured"]:
+            status = click.style("configured", fg="green")
+        else:
+            status = click.style("not configured", fg="yellow")
         click.echo(f"  {source['name']:<20} {status}")
 
 
