@@ -208,6 +208,28 @@ class TestWormsAdapter:
 # ---------------------------------------------------------------------------
 
 
+def _mock_xarray_dataset(
+    variable: str, value: float = 15.2,
+) -> Any:
+    """Build a minimal xarray-like Dataset for CMEMS tests."""
+    import numpy as np
+
+    try:
+        import xarray as xr
+    except ImportError:
+        pytest.skip("xarray not installed")
+
+    coords = {
+        "time": [np.datetime64("2024-01-01T00:00:00")],
+        "depth": [0.5],
+        "latitude": [40.0],
+        "longitude": [5.0],
+    }
+    data = np.array([[[[value]]]])
+    ds = xr.Dataset({variable: (["time", "depth", "latitude", "longitude"], data)}, coords=coords)
+    return ds
+
+
 class TestCmemsAdapter:
     def test_properties(self) -> None:
         adapter = CmemsAdapter()
@@ -216,26 +238,40 @@ class TestCmemsAdapter:
 
     @pytest.mark.asyncio
     async def test_get_sst(self) -> None:
-        adapter = CmemsAdapter()
-        raw = [{"longitude": 5.0, "latitude": 40.0, "time": "2024-01-01T00:00:00Z", "thetao": 15.2}]
-        mock_resp = _mock_response(raw)
+        adapter = CmemsAdapter(username="u", password="p")
+        ds = _mock_xarray_dataset("thetao", 15.2)
 
-        with patch.object(adapter, "_request", return_value=mock_resp):
+        with patch.object(adapter, "_open_dataset_sync", return_value=ds):
             results = await adapter.get_sst(BBOX, T_START, T_END)
 
         assert len(results) == 1
         assert results[0]["parameter"] == "SST"
         assert results[0]["unit"] == "degC"
-        assert results[0]["value"] == 15.2
+        assert abs(results[0]["value"] - 15.2) < 0.01
         assert results[0]["geometry"]["type"] == "Point"
 
     @pytest.mark.asyncio
     async def test_get_currents(self) -> None:
-        adapter = CmemsAdapter()
-        raw = [{"longitude": 5.0, "latitude": 40.0, "time": "2024-01-01T00:00:00Z", "uo": 0.3, "vo": -0.1}]
-        mock_resp = _mock_response(raw)
+        adapter = CmemsAdapter(username="u", password="p")
+        import numpy as np
 
-        with patch.object(adapter, "_request", return_value=mock_resp):
+        try:
+            import xarray as xr
+        except ImportError:
+            pytest.skip("xarray not installed")
+
+        coords = {
+            "time": [np.datetime64("2024-01-01T00:00:00")],
+            "depth": [0.5],
+            "latitude": [40.0],
+            "longitude": [5.0],
+        }
+        ds = xr.Dataset({
+            "uo": (["time", "depth", "latitude", "longitude"], np.array([[[[0.3]]]])),
+            "vo": (["time", "depth", "latitude", "longitude"], np.array([[[[-0.1]]]])),
+        }, coords=coords)
+
+        with patch.object(adapter, "_open_dataset_sync", return_value=ds):
             results = await adapter.get_currents(BBOX, T_START, T_END)
 
         assert len(results) == 2
@@ -244,26 +280,29 @@ class TestCmemsAdapter:
 
     @pytest.mark.asyncio
     async def test_fetch_default_sst(self) -> None:
-        adapter = CmemsAdapter()
-        raw = [{"longitude": 5.0, "latitude": 40.0, "time": "2024-01-01T00:00:00Z", "thetao": 15.0}]
-        mock_resp = _mock_response(raw)
+        adapter = CmemsAdapter(username="u", password="p")
+        ds = _mock_xarray_dataset("thetao", 15.0)
 
-        with patch.object(adapter, "_request", return_value=mock_resp):
+        with patch.object(adapter, "_open_dataset_sync", return_value=ds):
             results = await adapter.fetch(BBOX, T_START, T_END)
 
         assert len(results) == 1
         assert results[0]["parameter"] == "SST"
 
     @pytest.mark.asyncio
+    async def test_fetch_no_credentials(self) -> None:
+        adapter = CmemsAdapter()  # no username/password
+        results = await adapter.fetch(BBOX, T_START, T_END)
+        assert results == []
+
+    @pytest.mark.asyncio
     async def test_fetch_handles_error(self) -> None:
-        adapter = CmemsAdapter(max_retries=1)
+        adapter = CmemsAdapter(username="u", password="p")
 
-        async def _fail(*args: Any, **kwargs: Any) -> httpx.Response:
-            raise httpx.HTTPStatusError(
-                "500", request=httpx.Request("GET", "https://x"), response=_mock_response({}, 500),
-            )
+        def _fail(*args: Any, **kwargs: Any) -> None:
+            raise RuntimeError("connection failed")
 
-        with patch.object(adapter, "_request", side_effect=_fail):
-            results = await adapter.get_sst(BBOX, T_START, T_END)
+        with patch.object(adapter, "_open_dataset_sync", side_effect=_fail):
+            results = await adapter.fetch(BBOX, T_START, T_END)
 
         assert results == []
