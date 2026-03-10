@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from okeanus import __version__
-from okeanus.api import health, observations, regions, vessels
+from okeanus.api import health, ingest, observations, regions, vessels
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +60,7 @@ app.include_router(health.router)
 app.include_router(observations.router)
 app.include_router(vessels.router)
 app.include_router(regions.router)
+app.include_router(ingest.router)
 
 
 @app.exception_handler(Exception)

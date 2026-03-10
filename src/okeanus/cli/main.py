@@ -68,11 +68,41 @@ def fetch(source: str, bbox: str | None, time_start: str | None, time_end: str |
 
     SOURCE is the name of the adapter (e.g. cmems, ais, obis).
     """
-    click.echo(f"Fetching from '{source}'...")
-    if bbox:
-        click.echo(f"  bbox: {bbox}")
-    if time_start:
-        click.echo(f"  time_start: {time_start}")
-    if time_end:
-        click.echo(f"  time_end: {time_end}")
-    click.echo(click.style("Adapter framework not yet implemented -- coming soon.", fg="yellow"))
+    import asyncio
+
+    from okeanus.api.ingest import _dict_to_observation
+    from okeanus.db.postgres import async_session_factory
+
+    async def _run() -> int:
+        if source == "cmems":
+            from okeanus.adapters.cmems import CmemsAdapter
+
+            adapter = CmemsAdapter(
+                username=settings.cmems_username,
+                password=settings.cmems_password,
+            )
+        else:
+            click.echo(click.style(f"Unknown source: {source}", fg="red"))
+            raise SystemExit(1)
+
+        from datetime import UTC, datetime, timedelta
+
+        ts = (datetime.fromisoformat(time_start)
+              if time_start else datetime.now(UTC) - timedelta(days=7))
+        te = datetime.fromisoformat(time_end) if time_end else datetime.now(UTC)
+        b = tuple(float(x) for x in bbox.split(",")) if bbox else (-10.0, 35.0, 0.0, 45.0)
+
+        click.echo(f"Fetching from '{source}' bbox={b} {ts} -> {te}")
+        records = await adapter.fetch(b, ts, te)
+        click.echo(f"  Got {len(records)} records")
+
+        if records:
+            observations = [_dict_to_observation(r) for r in records]
+            async with async_session_factory() as session:
+                session.add_all(observations)
+                await session.commit()
+            msg = f"  Stored {len(observations)} observations in PostGIS"
+            click.echo(click.style(msg, fg="green"))
+        return len(records)
+
+    asyncio.run(_run())

@@ -2,43 +2,19 @@
 
 from __future__ import annotations
 
-import uuid
-from datetime import UTC, datetime
+import logging
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query
-from geojson_pydantic import Feature, FeatureCollection, Point
+from geoalchemy2.functions import ST_MakeEnvelope
+from geojson_pydantic import Feature, FeatureCollection
+from sqlalchemy import select
 
+from okeanus.db.postgres import async_session_factory
+from okeanus.schema.base import Observation, ObservationBase
+
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/vessels", tags=["vessels"])
-
-
-def _mock_vessel(mmsi: int, lon: float, lat: float) -> Feature:
-    """Create a mock vessel feature."""
-    return Feature(
-        type="Feature",
-        id=str(uuid.uuid4()),
-        geometry=Point(type="Point", coordinates=[lon, lat]),
-        properties={
-            "mmsi": mmsi,
-            "obs_type": "vessel",
-            "timestamp": datetime.now(UTC).isoformat(),
-            "source_name": "mock-ais",
-            "source_id": f"ais-{mmsi}",
-            "ship_name": f"VESSEL-{mmsi}",
-            "speed_over_ground": 12.5,
-            "course_over_ground": 180.0,
-        },
-    )
-
-
-# Sample mock vessels for MVP
-_MOCK_VESSELS = {
-    123456789: (18.4241, -33.9249),
-    987654321: (55.2708, -21.1151),
-    111222333: (3.7038, 43.4075),
-    444555666: (-43.1729, -22.9068),
-    777888999: (103.8198, 1.3521),
-}
 
 
 @router.get("", response_model=FeatureCollection)
@@ -51,41 +27,44 @@ async def list_vessels(
             pattern=r"^-?\d+\.?\d*,-?\d+\.?\d*,-?\d+\.?\d*,-?\d+\.?\d*$",
         ),
     ] = None,
-    time_start: Annotated[
-        datetime | None,
-        Query(description="Start of time range (ISO 8601)"),
-    ] = None,
-    time_end: Annotated[
-        datetime | None,
-        Query(description="End of time range (ISO 8601)"),
-    ] = None,
+    limit: Annotated[int, Query(ge=1, le=1000)] = 100,
 ) -> FeatureCollection:
-    """Query vessel positions by MMSI, bounding box, and time range.
+    """Query vessel positions by MMSI and bounding box."""
+    stmt = select(Observation).where(Observation.obs_type == "vessel")
 
-    Returns a GeoJSON FeatureCollection. For MVP, returns mock data.
-    """
-    features: list[Feature] = []
-    for vessel_mmsi, (lon, lat) in _MOCK_VESSELS.items():
-        if mmsi and vessel_mmsi != mmsi:
-            continue
-        if bbox:
-            parts = [float(x) for x in bbox.split(",")]
-            west, south, east, north = parts[0], parts[1], parts[2], parts[3]
-            if not (west <= lon <= east and south <= lat <= north):
-                continue
-        features.append(_mock_vessel(vessel_mmsi, lon, lat))
+    if mmsi:
+        stmt = stmt.where(Observation.mmsi == mmsi)
+    if bbox:
+        w, s, e, n = [float(x) for x in bbox.split(",")]
+        stmt = stmt.where(
+            Observation.geometry.ST_Intersects(ST_MakeEnvelope(w, s, e, n, 4326))
+        )
 
+    stmt = stmt.order_by(Observation.timestamp.desc()).limit(limit)
+
+    async with async_session_factory() as session:
+        result = await session.execute(stmt)
+        rows = result.scalars().all()
+
+    features = [ObservationBase.model_validate(r).to_feature().model_dump() for r in rows]
     return FeatureCollection(type="FeatureCollection", features=features)
 
 
 @router.get("/{mmsi}", response_model=Feature)
 async def get_vessel(mmsi: int) -> Feature:
-    """Get the latest position for a specific vessel by MMSI.
+    """Get the latest position for a specific vessel by MMSI."""
+    stmt = (
+        select(Observation)
+        .where(Observation.obs_type == "vessel", Observation.mmsi == mmsi)
+        .order_by(Observation.timestamp.desc())
+        .limit(1)
+    )
 
-    Returns a single GeoJSON Feature.
-    """
-    if mmsi not in _MOCK_VESSELS:
+    async with async_session_factory() as session:
+        result = await session.execute(stmt)
+        row = result.scalars().first()
+
+    if not row:
         raise HTTPException(status_code=404, detail=f"Vessel with MMSI {mmsi} not found")
 
-    lon, lat = _MOCK_VESSELS[mmsi]
-    return _mock_vessel(mmsi, lon, lat)
+    return ObservationBase.model_validate(row).to_feature()
