@@ -26,6 +26,13 @@ OOI = "https://erddap.dataexplorer.oceanobservatories.org/erddap"
 CIOOSATLANTIC = "https://cioosatlantic.ca/erddap"
 IFREMER = "https://www.ifremer.fr/erddap"
 BCODMO = "https://erddap.bco-dmo.org/erddap"
+PODAAC = "https://podaac-tools.jpl.nasa.gov/erddap"
+EMODNET_PHYSICS = "https://erddap.emodnet-physics.eu/erddap"
+EMODNET_CHEMISTRY = "https://erddap.emodnet-chemistry.eu/erddap"
+IMOS = "https://thredds.aodn.org.au/thredds/erddap"
+CIOOS_PACIFIC = "https://data.cioospacific.ca/erddap"
+HYCOM = "https://ncss.hycom.org/thredds"
+NSIDC = "https://nsidc.org/erddap"
 
 
 @dataclass(frozen=True)
@@ -208,6 +215,232 @@ PRESETS: dict[str, ErddapPreset] = {
         server=OOI,
         dataset_id="allDatasets",
         variables="",
+        category="physical",
+    ),
+    # --- Wave 3 additions ---
+    # --- NCEI World Ocean Database ---
+    "ncei_wod": ErddapPreset(
+        name="NCEI World Ocean Database",
+        description="Historical T/S profiles from WOD (1.5M+ casts since 1772)",
+        server=NCEI,
+        dataset_id="allDatasets",
+        variables="",
+        category="physical",
+    ),
+    # --- OceanSITES fixed-point ---
+    "oceansites": ErddapPreset(
+        name="OceanSITES Fixed-Point Time Series",
+        description="Deep-ocean reference stations for climate monitoring",
+        server=COASTWATCH,
+        dataset_id="allDatasets",
+        variables="",
+        category="physical",
+    ),
+    # --- DART Tsunami Buoys ---
+    "dart_tsunami": ErddapPreset(
+        name="DART Tsunami Buoys",
+        description="Deep-ocean bottom pressure recorders for tsunami detection",
+        server=PMEL,
+        dataset_id="allDatasets",
+        variables="",
+        category="physical",
+    ),
+    # --- Sea Surface Height ---
+    "podaac_ssh": ErddapPreset(
+        name="PO.DAAC Sea Surface Height",
+        description="Satellite altimetry sea surface height anomalies",
+        server=PODAAC,
+        dataset_id="allDatasets",
+        variables="",
+        category="physical",
+    ),
+    # --- EGO Gliders (Europe) ---
+    "ego_gliders": ErddapPreset(
+        name="EGO European Gliders",
+        description="European glider profiles from Ifremer (T, S, depth)",
+        server=IFREMER,
+        dataset_id="allDatasets",
+        variables="",
+        category="physical",
+    ),
+    # --- PMEL Acoustics ---
+    "pmel_acoustics": ErddapPreset(
+        name="NOAA PMEL Acoustics",
+        description="Pacific ambient ocean noise levels from hydrophones",
+        server=PMEL,
+        dataset_id="allDatasets",
+        variables="",
+        obs_type="physical",
+        category="acoustic",
+    ),
+    # --- Ocean Acidification ---
+    "noaa_oa_buoys": ErddapPreset(
+        name="NOAA Ocean Acidification Buoys",
+        description="Surface CO2 + pH from MAPCO2/IPACOA network",
+        server=PMEL,
+        dataset_id="allDatasets",
+        variables="",
+        obs_type="physical",
+        category="chemical",
+    ),
+    # --- OCADS Carbon ---
+    "ocads_carbon": ErddapPreset(
+        name="NCEI Ocean Carbon Data (OCADS)",
+        description="Global ocean dissolved inorganic carbon observations",
+        server=NCEI,
+        dataset_id="allDatasets",
+        variables="",
+        obs_type="physical",
+        category="chemical",
+    ),
+    # --- EMODnet Physics ---
+    "emodnet_physics": ErddapPreset(
+        name="EMODnet Physics",
+        description="EU in-situ ocean physics (T, S, waves, currents, sea level)",
+        server=EMODNET_PHYSICS,
+        dataset_id="allDatasets",
+        variables="",
+        category="physical",
+    ),
+    # --- EMODnet Chemistry ---
+    "emodnet_chemistry": ErddapPreset(
+        name="EMODnet Chemistry",
+        description="EU ocean chemistry (nutrients, contaminants, eutrophication)",
+        server=EMODNET_CHEMISTRY,
+        dataset_id="allDatasets",
+        variables="",
+        obs_type="physical",
+        category="chemical",
+    ),
+    # --- NCEI Microplastics (from OCADS) ---
+    "ncei_microplastics": ErddapPreset(
+        name="NCEI Global Microplastics",
+        description="Global ocean microplastics concentration database",
+        server=NCEI,
+        dataset_id="allDatasets",
+        variables="",
+        obs_type="physical",
+        category="chemical",
+    ),
+    # --- PSMSL Sea Level ---
+    "psmsl_sea_level": ErddapPreset(
+        name="PSMSL Tide Gauge Sea Level",
+        description="Monthly mean sea level from 2000+ tide gauges since 1807",
+        server=COASTWATCH,
+        dataset_id="allDatasets",
+        variables="",
+        category="physical",
+    ),
+    # ------------------------------------------------------------------
+    # Wave 4 additions
+    # ------------------------------------------------------------------
+    # --- Satellite Ocean Color ---
+    "viirs_chlorophyll": ErddapPreset(
+        name="VIIRS Chlorophyll-a",
+        description="Suomi-NPP VIIRS chlorophyll-a (4km, 8-day composite)",
+        server=COASTWATCH,
+        dataset_id="nesdisVHNSQchlaMonthly",
+        variables="time,latitude,longitude,chlor_a",
+        category="satellite",
+    ),
+    "aqua_modis_par": ErddapPreset(
+        name="MODIS Aqua PAR",
+        description="Photosynthetically active radiation (4km, 8-day)",
+        server=COASTWATCH,
+        dataset_id="erdMH1par08day",
+        variables="time,latitude,longitude,par",
+        category="satellite",
+    ),
+    # --- Sea Surface Salinity ---
+    "smap_sss": ErddapPreset(
+        name="SMAP Sea Surface Salinity",
+        description="NASA SMAP L3 sea surface salinity (0.25 deg, 8-day)",
+        server=COASTWATCH,
+        dataset_id="nasa_jpl_c6b0_a4e6_5a60",
+        variables="time,latitude,longitude,sss",
+        category="physical",
+    ),
+    # --- Geostationary SST ---
+    "goes_sst": ErddapPreset(
+        name="GOES Geostationary SST",
+        description="GOES-16/17 SST for western hemisphere (hourly, 2km)",
+        server=COASTWATCH,
+        dataset_id="goes16SST",
+        variables="time,latitude,longitude,sst",
+        category="satellite",
+    ),
+    # --- High-Res SST ---
+    "ghrsst": ErddapPreset(
+        name="GHRSST L4 Global Foundation SST",
+        description="Group for High-Res SST blended product (0.01 deg daily)",
+        server=COASTWATCH,
+        dataset_id="jplMURSST41anom1day",
+        variables="time,latitude,longitude,sstAnom,analysed_sst",
+        category="physical",
+    ),
+    # --- Wind ---
+    "ccmp_wind": ErddapPreset(
+        name="CCMP Cross-Calibrated Wind",
+        description="Multi-platform ocean surface wind vectors (0.25 deg, 6-hourly)",
+        server=COASTWATCH,
+        dataset_id="erdQMstress3dayanom",
+        variables="time,latitude,longitude",
+        category="physical",
+    ),
+    # --- BGC-Argo ---
+    "argo_bgc": ErddapPreset(
+        name="BGC-Argo Biogeochemistry",
+        description="Biogeochemical Argo profiles (O2, nitrate, pH, chlorophyll, POC)",
+        server=IFREMER,
+        dataset_id="allDatasets",
+        variables="",
+        obs_type="physical",
+        category="chemical",
+    ),
+    # --- Saildrone ---
+    "saildrone": ErddapPreset(
+        name="Saildrone Uncrewed Surface Vehicle",
+        description="NOAA Saildrone USV observations (wind, SST, salinity, CO2)",
+        server=PMEL,
+        dataset_id="allDatasets",
+        variables="",
+        category="physical",
+    ),
+    # --- IBTrACS Tropical Cyclones ---
+    "ibtracs": ErddapPreset(
+        name="IBTrACS Tropical Cyclones",
+        description="International Best Track Archive — global tropical cyclone data since 1842",
+        server=NCEI,
+        dataset_id="allDatasets",
+        variables="",
+        obs_type="physical",
+        category="physical",
+    ),
+    # --- Australian Oceans ---
+    "imos_sst": ErddapPreset(
+        name="IMOS Australian SST",
+        description="IMOS satellite SST for Australian waters",
+        server=IMOS,
+        dataset_id="allDatasets",
+        variables="",
+        category="physical",
+    ),
+    # --- Canadian Pacific ---
+    "cioos_pacific": ErddapPreset(
+        name="CIOOS Pacific",
+        description="Canadian Integrated Ocean Observing — Pacific region",
+        server=CIOOS_PACIFIC,
+        dataset_id="allDatasets",
+        variables="",
+        category="physical",
+    ),
+    # --- Bathymetry ---
+    "gebco_bathymetry": ErddapPreset(
+        name="GEBCO Global Bathymetry",
+        description="GEBCO gridded bathymetry/topography (15 arc-second)",
+        server=COASTWATCH,
+        dataset_id="GEBCO_2024",
+        variables="time,latitude,longitude,elevation",
         category="physical",
     ),
 }

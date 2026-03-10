@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     # GBIF (optional — works without auth)
     gbif_username: str = ""
     gbif_password: str = ""
+    # NASA Earthdata (free at urs.earthdata.nasa.gov)
+    nasa_earthdata_username: str = ""
+    nasa_earthdata_password: str = ""
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
@@ -64,6 +67,36 @@ class Settings(BaseSettings):
             {"name": "Marine Regions", "configured": True, "auth": "none"},
             {"name": "WoRMS", "configured": True, "auth": "none"},
             {"name": "OpenSanctions", "configured": True, "auth": "none"},
+            {"name": "iNaturalist", "configured": True, "auth": "none"},
+            {"name": "PANGAEA", "configured": True, "auth": "none"},
+            {"name": "OBIS-SEAMAP", "configured": True, "auth": "none"},
+            {"name": "FishBase", "configured": True, "auth": "none"},
+            {"name": "ICES", "configured": True, "auth": "none"},
+            {"name": "HAEDAT", "configured": True, "auth": "none"},
+            {"name": "HABSOS", "configured": True, "auth": "none"},
+            {"name": "BOLD", "configured": True, "auth": "none"},
+            {"name": "PSMSL", "configured": True, "auth": "none"},
+            {"name": "NOAA Wrecks", "configured": True, "auth": "none"},
+            {"name": "InterRidge Vents", "configured": True, "auth": "none"},
+            {"name": "Marine Debris", "configured": True, "auth": "none"},
+            {"name": "IMB Piracy", "configured": True, "auth": "none"},
+            {"name": "CLAV IUU", "configured": True, "auth": "none"},
+            {"name": "ECMWF Open Data", "configured": True, "auth": "none"},
+            {"name": "argopy (Argo)", "configured": True, "auth": "none"},
+            {"name": "OPeNDAP/THREDDS", "configured": True, "auth": "none"},
+            {"name": "Marine Heatwave", "configured": True, "auth": "none"},
+            {"name": "NOAA Deep-Sea Coral", "configured": True, "auth": "none"},
+            {"name": "BOEM Offshore Wind", "configured": True, "auth": "none"},
+            {"name": "Global Mangrove Watch", "configured": True, "auth": "none"},
+            {"name": "SeaLifeBase", "configured": True, "auth": "none"},
+            {"name": "EMODnet Biology", "configured": True, "auth": "none"},
+            {"name": "Ocean Tracking Network", "configured": True, "auth": "none"},
+            {"name": "Reef Life Survey", "configured": True, "auth": "none"},
+            {"name": "USGS Earthquakes", "configured": True, "auth": "none"},
+            {"name": "NSIDC Sea Ice", "configured": True, "auth": "none"},
+            {"name": "FAO FIRMS", "configured": True, "auth": "none"},
+            {"name": "Thetis MRV", "configured": True, "auth": "none"},
+            {"name": "NOAA Storm Events", "configured": True, "auth": "none"},
             # Free registration required
             {
                 "name": "CMEMS",

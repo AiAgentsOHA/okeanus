@@ -58,6 +58,8 @@ def _build_adapter(source: str) -> Any:
         kwargs = {"api_token": settings.onc_api_token}
     elif source == "wdpa":
         kwargs = {"api_token": settings.wdpa_api_token}
+    elif source == "earthaccess":
+        kwargs = {"username": settings.nasa_earthdata_username, "password": settings.nasa_earthdata_password}
 
     return adapter_cls(**kwargs)
 
