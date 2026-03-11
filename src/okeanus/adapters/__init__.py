@@ -64,6 +64,26 @@ from okeanus.adapters.usgs_quakes import UsgsQuakesAdapter
 from okeanus.adapters.wdpa import WdpaAdapter
 from okeanus.adapters.worms import WormsAdapter
 
+# --- Blue Economy Phase 1: Government Stats ---
+from okeanus.adapters.world_bank import WorldBankAdapter
+from okeanus.adapters.fred import FredAdapter
+from okeanus.adapters.noaa_enow import NoaaEnowAdapter
+from okeanus.adapters.eurostat_blue import EurostatBlueAdapter
+from okeanus.adapters.unctad import UnctadAdapter
+from okeanus.adapters.imf_commodities import ImfCommoditiesAdapter
+from okeanus.adapters.ilo_maritime import IloMaritimeAdapter
+from okeanus.adapters.oecd_ocean import OecdOceanAdapter
+
+# --- Blue Economy Phase 2: Trader Layer ---
+from okeanus.adapters.ssb_salmon import SsbSalmonAdapter
+from okeanus.adapters.eumofa import EumofaAdapter
+from okeanus.adapters.usda_gats import UsdaGatsAdapter
+from okeanus.adapters.noaa_foss import NoaaFossAdapter
+from okeanus.adapters.sse_indices import SseIndicesAdapter
+from okeanus.adapters.bunker_index import BunkerIndexAdapter
+from okeanus.adapters.oilprice_api import OilPriceApiAdapter
+from okeanus.adapters.usda_bunker import UsdaBunkerAdapter
+
 __all__ = [
     "AisStreamAdapter",
     "AllenCoralAdapter",
@@ -128,6 +148,24 @@ __all__ = [
     "UsgsQuakesAdapter",
     "WdpaAdapter",
     "WormsAdapter",
+    # Blue Economy Phase 1
+    "WorldBankAdapter",
+    "FredAdapter",
+    "NoaaEnowAdapter",
+    "EurostatBlueAdapter",
+    "UnctadAdapter",
+    "ImfCommoditiesAdapter",
+    "IloMaritimeAdapter",
+    "OecdOceanAdapter",
+    # Blue Economy Phase 2
+    "SsbSalmonAdapter",
+    "EumofaAdapter",
+    "UsdaGatsAdapter",
+    "NoaaFossAdapter",
+    "SseIndicesAdapter",
+    "BunkerIndexAdapter",
+    "OilPriceApiAdapter",
+    "UsdaBunkerAdapter",
 ]
 
 # Registry mapping source names to adapter classes for dynamic lookup
@@ -194,4 +232,22 @@ ADAPTER_REGISTRY: dict[str, type[BaseAdapter]] = {
     "usgs_quakes": UsgsQuakesAdapter,
     "wdpa": WdpaAdapter,
     "worms": WormsAdapter,
+    # Blue Economy Phase 1: Government Stats
+    "world_bank": WorldBankAdapter,
+    "fred": FredAdapter,
+    "noaa_enow": NoaaEnowAdapter,
+    "eurostat_blue": EurostatBlueAdapter,
+    "unctad": UnctadAdapter,
+    "imf_commodities": ImfCommoditiesAdapter,
+    "ilo_maritime": IloMaritimeAdapter,
+    "oecd_ocean": OecdOceanAdapter,
+    # Blue Economy Phase 2: Trader Layer
+    "ssb_salmon": SsbSalmonAdapter,
+    "eumofa": EumofaAdapter,
+    "usda_gats": UsdaGatsAdapter,
+    "noaa_foss": NoaaFossAdapter,
+    "sse_indices": SseIndicesAdapter,
+    "bunker_index": BunkerIndexAdapter,
+    "oilprice_api": OilPriceApiAdapter,
+    "usda_bunker": UsdaBunkerAdapter,
 }
