@@ -51,6 +51,8 @@ class Settings(BaseSettings):
     # NASA Earthdata (free at urs.earthdata.nasa.gov)
     nasa_earthdata_username: str = ""
     nasa_earthdata_password: str = ""
+    # IUCN Red List (free at apiv3.iucnredlist.org)
+    iucn_api_token: str = ""
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
@@ -97,6 +99,13 @@ class Settings(BaseSettings):
             {"name": "FAO FIRMS", "configured": True, "auth": "none"},
             {"name": "Thetis MRV", "configured": True, "auth": "none"},
             {"name": "NOAA Storm Events", "configured": True, "auth": "none"},
+            {"name": "EMODnet Seabed Habitats", "configured": True, "auth": "none"},
+            {"name": "EMODnet Human Activities", "configured": True, "auth": "none"},
+            {"name": "EMODnet Bathymetry", "configured": True, "auth": "none"},
+            {"name": "NOAA ERMA", "configured": True, "auth": "none"},
+            {"name": "NASA SeaBASS", "configured": True, "auth": "none"},
+            {"name": "Movebank", "configured": True, "auth": "none"},
+            {"name": "Ocean Info Hub", "configured": True, "auth": "none"},
             # Free registration required
             {
                 "name": "CMEMS",
@@ -120,6 +129,7 @@ class Settings(BaseSettings):
             },
             {"name": "WDPA", "configured": bool(self.wdpa_api_token), "auth": "api_token"},
             {"name": "Copernicus", "configured": bool(self.copernicus_api_key), "auth": "api_key"},
+            {"name": "IUCN Red List", "configured": bool(self.iucn_api_token), "auth": "api_token"},
             {
                 "name": "Sentinel Hub",
                 "configured": bool(

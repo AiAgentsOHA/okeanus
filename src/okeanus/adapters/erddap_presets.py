@@ -443,6 +443,78 @@ PRESETS: dict[str, ErddapPreset] = {
         variables="time,latitude,longitude,elevation",
         category="physical",
     ),
+    # ------------------------------------------------------------------
+    # Wave 5 additions — Session 8
+    # ------------------------------------------------------------------
+    # --- Long-Term SST Records ---
+    "hadisst": ErddapPreset(
+        name="HadISST Sea Surface Temperature",
+        description="Hadley Centre monthly SST (1870–present, 1 deg)",
+        server=COASTWATCH,
+        dataset_id="erdHadISST",
+        variables="time,latitude,longitude,sst",
+        category="physical",
+    ),
+    "pathfinder_sst": ErddapPreset(
+        name="AVHRR Pathfinder SST",
+        description="Long-term satellite SST record (4km, 1981–present)",
+        server=NCEI,
+        dataset_id="pathfinderAgg_day",
+        variables="time,latitude,longitude,sea_surface_temperature",
+        category="physical",
+    ),
+    "blended_sst_anomaly": ErddapPreset(
+        name="NOAA Blended SST Anomaly",
+        description="Blended sea surface temperature anomaly (5-day composite)",
+        server=COASTWATCH,
+        dataset_id="noaacwBlendedSstAnom5day",
+        variables="time,latitude,longitude,sstAnomaly",
+        category="physical",
+    ),
+    # --- Sea Level / Altimetry ---
+    "blended_ssh": ErddapPreset(
+        name="NOAA Blended Sea Surface Height",
+        description="Blended multi-mission sea surface height (daily, 0.25 deg)",
+        server=COASTWATCH,
+        dataset_id="noaacwBlendedSshDaily",
+        variables="time,latitude,longitude,ssh",
+        category="physical",
+    ),
+    # --- Wind Stress ---
+    "quikscat_wind_stress": ErddapPreset(
+        name="QuikSCAT Wind Stress",
+        description="Ocean surface wind stress from QuikSCAT scatterometer (daily)",
+        server=COASTWATCH,
+        dataset_id="erdQAstress1day",
+        variables="time,latitude,longitude,taux,tauy",
+        category="physical",
+    ),
+    # --- Historical Ocean Color ---
+    "seawifs_chlorophyll": ErddapPreset(
+        name="SeaWiFS Chlorophyll-a",
+        description="SeaWiFS ocean color chlorophyll (1997–2010, 9km)",
+        server=COASTWATCH,
+        dataset_id="erdSW2018chla8day",
+        variables="time,latitude,longitude,chlorophyll",
+        category="satellite",
+    ),
+    # --- World Ocean Atlas Climatology ---
+    "woa_temperature": ErddapPreset(
+        name="World Ocean Atlas Temperature",
+        description="WOA18 annual temperature climatology (1 deg, 102 depth levels)",
+        server=NCEI,
+        dataset_id="nodc_woa18_t_an01_04",
+        variables="latitude,longitude,depth,t_an",
+        category="physical",
+    ),
+    "woa_salinity": ErddapPreset(
+        name="World Ocean Atlas Salinity",
+        description="WOA18 annual salinity climatology (1 deg, 102 depth levels)",
+        server=NCEI,
+        dataset_id="nodc_woa18_s_an01_04",
+        variables="latitude,longitude,depth,s_an",
+        category="physical",
+    ),
 }
 
 
