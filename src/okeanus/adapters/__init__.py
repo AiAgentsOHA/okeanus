@@ -84,6 +84,26 @@ from okeanus.adapters.bunker_index import BunkerIndexAdapter
 from okeanus.adapters.oilprice_api import OilPriceApiAdapter
 from okeanus.adapters.usda_bunker import UsdaBunkerAdapter
 
+# --- Blue Economy Phase 3: Finance Layer ---
+from okeanus.adapters.iati_ocean import IatiOceanAdapter
+from okeanus.adapters.gcf_ocean import GcfOceanAdapter
+from okeanus.adapters.verra_blue import VerraBlueAdapter
+from okeanus.adapters.wba_seafood import WbaSeafoodAdapter
+
+# --- Blue Economy Phase 4: Risk & Infrastructure ---
+from okeanus.adapters.fema_nfip import FemaNfipAdapter
+from okeanus.adapters.boem_offshore import BoemOffshoreAdapter
+from okeanus.adapters.crown_estate import CrownEstateAdapter
+from okeanus.adapters.ospar_installations import OsparInstallationsAdapter
+from okeanus.adapters.iuu_index import IuuIndexAdapter
+
+# --- Blue Economy Phase 5: Fisheries & Ecosystem Economics ---
+from okeanus.adapters.sea_around_us import SeaAroundUsAdapter
+from okeanus.adapters.ices_sag import IcesSagAdapter
+from okeanus.adapters.fao_fishstat import FaoFishstatAdapter
+from okeanus.adapters.esvd import EsvdAdapter
+from okeanus.adapters.isa_deepdata import IsaDeepDataAdapter
+
 __all__ = [
     "AisStreamAdapter",
     "AllenCoralAdapter",
@@ -166,6 +186,23 @@ __all__ = [
     "BunkerIndexAdapter",
     "OilPriceApiAdapter",
     "UsdaBunkerAdapter",
+    # Blue Economy Phase 3
+    "IatiOceanAdapter",
+    "GcfOceanAdapter",
+    "VerraBlueAdapter",
+    "WbaSeafoodAdapter",
+    # Blue Economy Phase 4
+    "FemaNfipAdapter",
+    "BoemOffshoreAdapter",
+    "CrownEstateAdapter",
+    "OsparInstallationsAdapter",
+    "IuuIndexAdapter",
+    # Blue Economy Phase 5
+    "SeaAroundUsAdapter",
+    "IcesSagAdapter",
+    "FaoFishstatAdapter",
+    "EsvdAdapter",
+    "IsaDeepDataAdapter",
 ]
 
 # Registry mapping source names to adapter classes for dynamic lookup
@@ -250,4 +287,21 @@ ADAPTER_REGISTRY: dict[str, type[BaseAdapter]] = {
     "bunker_index": BunkerIndexAdapter,
     "oilprice_api": OilPriceApiAdapter,
     "usda_bunker": UsdaBunkerAdapter,
+    # Blue Economy Phase 3: Finance Layer
+    "iati_ocean": IatiOceanAdapter,
+    "gcf_ocean": GcfOceanAdapter,
+    "verra_blue": VerraBlueAdapter,
+    "wba_seafood": WbaSeafoodAdapter,
+    # Blue Economy Phase 4: Risk & Infrastructure
+    "fema_nfip": FemaNfipAdapter,
+    "boem_offshore": BoemOffshoreAdapter,
+    "crown_estate": CrownEstateAdapter,
+    "ospar_installations": OsparInstallationsAdapter,
+    "iuu_index": IuuIndexAdapter,
+    # Blue Economy Phase 5: Fisheries & Ecosystem Economics
+    "sea_around_us": SeaAroundUsAdapter,
+    "ices_sag": IcesSagAdapter,
+    "fao_fishstat": FaoFishstatAdapter,
+    "esvd": EsvdAdapter,
+    "isa_deepdata": IsaDeepDataAdapter,
 }
