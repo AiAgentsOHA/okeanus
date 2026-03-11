@@ -106,6 +106,15 @@ class Settings(BaseSettings):
             {"name": "NASA SeaBASS", "configured": True, "auth": "none"},
             {"name": "Movebank", "configured": True, "auth": "none"},
             {"name": "Ocean Info Hub", "configured": True, "auth": "none"},
+            {"name": "GFS Marine Forecast", "configured": True, "auth": "none"},
+            {"name": "Smithsonian GVP Volcanoes", "configured": True, "auth": "none"},
+            {"name": "NGDC Historical Tsunami", "configured": True, "auth": "none"},
+            {"name": "Orcasound Hydrophones", "configured": True, "auth": "none"},
+            {"name": "Allen Coral Atlas", "configured": True, "auth": "none"},
+            {"name": "US Federal Register", "configured": True, "auth": "none"},
+            {"name": "GOA-ON Ocean Acidification", "configured": True, "auth": "none"},
+            {"name": "RAM Legacy Stock Assessment", "configured": True, "auth": "none"},
+            {"name": "Copernicus Data Space", "configured": True, "auth": "none"},
             # Free registration required
             {
                 "name": "CMEMS",
