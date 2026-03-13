@@ -54,6 +54,20 @@ class Settings(BaseSettings):
     # IUCN Red List (free at apiv3.iucnredlist.org)
     iucn_api_token: str = ""
 
+    # -- Blue Economy API keys --
+    # FRED (free at fred.stlouisfed.org)
+    fred_api_key: str = ""
+    # USDA GATS (free at apps.fas.usda.gov)
+    usda_gats_api_key: str = ""
+    # OilPriceAPI (free tier at oilpriceapi.com)
+    oilprice_api_key: str = ""
+    # USDA AgTransport / Socrata (optional app token)
+    usda_bunker_app_token: str = ""
+    # Green Climate Fund (free registration)
+    gcf_ocean_api_key: str = ""
+    # ESVD Ecosystem Services (free registration at esvd.info)
+    esvd_api_key: str = ""
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
     def configured_sources(self) -> list[dict[str, str | bool]]:
@@ -146,6 +160,43 @@ class Settings(BaseSettings):
                 ),
                 "auth": "oauth",
             },
+            # -- Blue Economy Phase 1: Government Stats (no auth) --
+            {"name": "World Bank WDI", "configured": True, "auth": "none"},
+            {"name": "NOAA ENOW", "configured": True, "auth": "none"},
+            {"name": "Eurostat Maritime", "configured": True, "auth": "none"},
+            {"name": "UNCTAD Maritime", "configured": True, "auth": "none"},
+            {"name": "IMF Commodities", "configured": True, "auth": "none"},
+            {"name": "ILO Maritime", "configured": True, "auth": "none"},
+            {"name": "OECD Ocean", "configured": True, "auth": "none"},
+            # Phase 1 with key
+            {"name": "FRED", "configured": bool(self.fred_api_key), "auth": "api_key"},
+            # -- Blue Economy Phase 2: Trader Layer (no auth) --
+            {"name": "SSB Salmon", "configured": True, "auth": "none"},
+            {"name": "EUMOFA", "configured": True, "auth": "none"},
+            {"name": "NOAA FOSS", "configured": True, "auth": "none"},
+            {"name": "SSE Indices", "configured": True, "auth": "none"},
+            {"name": "Bunker Index", "configured": True, "auth": "none"},
+            # Phase 2 with key
+            {"name": "USDA GATS", "configured": bool(self.usda_gats_api_key), "auth": "api_key"},
+            {"name": "OilPriceAPI", "configured": bool(self.oilprice_api_key), "auth": "api_key"},
+            {"name": "USDA Bunker", "configured": True, "auth": "none (optional token)"},
+            # -- Blue Economy Phase 3: Finance Layer --
+            {"name": "IATI Ocean", "configured": True, "auth": "none"},
+            {"name": "Verra Blue Carbon", "configured": True, "auth": "none"},
+            {"name": "WBA Seafood", "configured": True, "auth": "none"},
+            {"name": "GCF Ocean", "configured": bool(self.gcf_ocean_api_key), "auth": "api_key"},
+            # -- Blue Economy Phase 4: Risk & Infrastructure (no auth) --
+            {"name": "FEMA NFIP", "configured": True, "auth": "none"},
+            {"name": "BOEM Offshore", "configured": True, "auth": "none"},
+            {"name": "Crown Estate", "configured": True, "auth": "none"},
+            {"name": "OSPAR Installations", "configured": True, "auth": "none"},
+            {"name": "IUU Index", "configured": True, "auth": "none"},
+            # -- Blue Economy Phase 5: Fisheries & Ecosystem Economics --
+            {"name": "Sea Around Us", "configured": True, "auth": "none"},
+            {"name": "ICES SAG", "configured": True, "auth": "none"},
+            {"name": "FAO FishStatJ", "configured": True, "auth": "none"},
+            {"name": "ISA DeepData", "configured": True, "auth": "none"},
+            {"name": "ESVD", "configured": bool(self.esvd_api_key), "auth": "api_key"},
         ]
 
 

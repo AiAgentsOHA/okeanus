@@ -60,6 +60,19 @@ def _build_adapter(source: str) -> Any:
         kwargs = {"api_token": settings.wdpa_api_token}
     elif source == "earthaccess":
         kwargs = {"username": settings.nasa_earthdata_username, "password": settings.nasa_earthdata_password}
+    # Blue Economy keyed adapters
+    elif source == "fred":
+        kwargs = {"api_key": settings.fred_api_key}
+    elif source == "usda_gats":
+        kwargs = {"api_key": settings.usda_gats_api_key}
+    elif source == "oilprice_api":
+        kwargs = {"api_key": settings.oilprice_api_key}
+    elif source == "usda_bunker":
+        kwargs = {"app_token": settings.usda_bunker_app_token}
+    elif source == "gcf_ocean":
+        kwargs = {"api_key": settings.gcf_ocean_api_key}
+    elif source == "esvd":
+        kwargs = {"api_key": settings.esvd_api_key}
 
     return adapter_cls(**kwargs)
 
