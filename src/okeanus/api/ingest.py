@@ -14,6 +14,7 @@ from okeanus.adapters import ADAPTER_REGISTRY
 from okeanus.config import settings
 from okeanus.db.postgres import async_session_factory
 from okeanus.schema.base import Observation
+from okeanus.transform import transform, store_transform_result
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/ingest", tags=["ingest"])
@@ -129,10 +130,26 @@ async def ingest_from_source(
     if not records:
         return {"source": source, "ingested": 0, "message": "No records returned"}
 
+    entity_counts: dict[str, int] = {}
     if store:
-        observations = [_dict_to_observation(r.copy()) for r in records]
+        economic_records = [r for r in records if r.get("obs_type") == "economic"]
+        other_records = [r for r in records if r.get("obs_type") != "economic"]
+
         async with async_session_factory() as session:
-            session.add_all(observations)
+            # Economic records go through the transform pipeline
+            if economic_records:
+                result, unmapped = transform(economic_records)
+                entity_counts = await store_transform_result(session, result)
+                # Fallback: unmapped economic records stored as plain observations
+                if unmapped:
+                    observations = [_dict_to_observation(r.copy()) for r in unmapped]
+                    session.add_all(observations)
+
+            # Non-economic records use the existing path
+            if other_records:
+                observations = [_dict_to_observation(r.copy()) for r in other_records]
+                session.add_all(observations)
+
             await session.commit()
 
     logger.info("Ingested %d records from %s", len(records), source)
@@ -140,5 +157,6 @@ async def ingest_from_source(
         "source": source,
         "ingested": len(records),
         "stored": store,
+        "entity_counts": entity_counts,
         "sample": records[0] if records else None,
     }

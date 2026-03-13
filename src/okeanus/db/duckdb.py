@@ -7,6 +7,7 @@ OLTP/OLAP workflows.
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -73,6 +74,67 @@ def analytical_query(sql: str, params: list[Any] | None = None) -> list[tuple[An
         else:
             result = conn.execute(sql)
         return result.fetchall()
+    finally:
+        conn.close()
+
+
+def timeseries_analytics(
+    code: str | None = None,
+    commodity: str | None = None,
+    country: str | None = None,
+    source_name: str | None = None,
+    time_start: datetime | None = None,
+    time_end: datetime | None = None,
+    aggregation: str = "monthly",
+) -> list[dict]:
+    """Aggregate time series data via DuckDB for analytics dashboards."""
+    valid_aggs = {"daily": "day", "weekly": "week", "monthly": "month", "yearly": "year"}
+    trunc = valid_aggs.get(aggregation, "month")
+
+    conditions: list[str] = []
+    params: list[Any] = []
+    if code:
+        conditions.append("code = ?")
+        params.append(code)
+    if commodity:
+        conditions.append("commodity = ?")
+        params.append(commodity)
+    if country:
+        conditions.append("country = ?")
+        params.append(country)
+    if source_name:
+        conditions.append("source_name = ?")
+        params.append(source_name)
+    if time_start:
+        conditions.append("timestamp >= ?")
+        params.append(time_start)
+    if time_end:
+        conditions.append("timestamp <= ?")
+        params.append(time_end)
+
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+
+    sql = f"""
+        SELECT
+            date_trunc('{trunc}', timestamp) AS period,
+            code,
+            commodity,
+            country,
+            avg(value) AS avg_value,
+            min(value) AS min_value,
+            max(value) AS max_value,
+            count(*) AS count
+        FROM pg.public.time_series
+        {where}
+        GROUP BY period, code, commodity, country
+        ORDER BY period DESC
+    """
+
+    conn = get_connection()
+    try:
+        result = conn.execute(sql, params).fetchall()
+        columns = ["period", "code", "commodity", "country", "avg_value", "min_value", "max_value", "count"]
+        return [dict(zip(columns, row)) for row in result]
     finally:
         conn.close()
 

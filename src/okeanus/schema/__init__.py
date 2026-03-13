@@ -34,6 +34,22 @@ from okeanus.schema.vessel import (
     VesselObservationCreate,
     VesselObservationRead,
 )
+from okeanus.schema.economy import (
+    TimeSeries,
+    TimeSeriesRead,
+    Entity,
+    EntityRead,
+    Flow,
+    FlowRead,
+    Event,
+    EventRead,
+    Assessment,
+    AssessmentRead,
+    Claim,
+    ClaimRead,
+    Relationship,
+    RelationshipRead,
+)
 
 __all__ = [
     "Base",
@@ -58,4 +74,19 @@ __all__ = [
     "SatelliteObservation",
     "SatelliteObservationCreate",
     "SatelliteObservationRead",
+    # Economy
+    "TimeSeries",
+    "TimeSeriesRead",
+    "Entity",
+    "EntityRead",
+    "Flow",
+    "FlowRead",
+    "Event",
+    "EventRead",
+    "Assessment",
+    "AssessmentRead",
+    "Claim",
+    "ClaimRead",
+    "Relationship",
+    "RelationshipRead",
 ]

@@ -17,7 +17,7 @@ from okeanus.schema.base import Observation, ObservationBase
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/observations", tags=["observations"])
 
-VALID_OBS_TYPES = {"physical", "vessel", "acoustic", "biological", "satellite"}
+VALID_OBS_TYPES = {"physical", "vessel", "acoustic", "biological", "satellite", "economic"}
 
 
 def _row_to_feature(row: Observation) -> dict[str, Any]:

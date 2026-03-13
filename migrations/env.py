@@ -15,6 +15,7 @@ import okeanus.schema.vessel  # noqa: F401
 import okeanus.schema.acoustic  # noqa: F401
 import okeanus.schema.biological  # noqa: F401
 import okeanus.schema.satellite  # noqa: F401
+import okeanus.schema.economy  # noqa: F401
 
 config = context.config
 
