@@ -10,6 +10,7 @@ Note: Requires a free API key from https://globalfishingwatch.org/our-apis/
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime
 from typing import Any
 
@@ -27,7 +28,7 @@ class GlobalFishingWatchAdapter(BaseAdapter):
 
     def __init__(self, *, api_key: str = "", **kwargs: Any) -> None:
         super().__init__(requests_per_second=1.0, **kwargs)
-        self._api_key = api_key
+        self._api_key = api_key or os.environ.get("GFW_API_KEY", "")
 
     @property
     def source_name(self) -> str:

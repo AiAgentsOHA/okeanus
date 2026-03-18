@@ -84,6 +84,6 @@ async def list_observations(
     async with async_session_factory() as session:
         result = await session.execute(stmt)
         rows = result.scalars().all()
+        features = [_row_to_feature(r) for r in rows]
 
-    features = [_row_to_feature(r) for r in rows]
     return FeatureCollection(type="FeatureCollection", features=features)

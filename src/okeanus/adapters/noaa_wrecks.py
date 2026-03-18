@@ -16,7 +16,10 @@ from okeanus.adapters.base import BaseAdapter
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://gis.charttools.noaa.gov/arcgis/rest/services/MCS/WrecksAndObstructions/MapServer/0/query"
+# Primary: NOAA ENC Direct to GIS (wrecks layer 33)
+BASE_URL = "https://encdirect.noaa.gov/arcgis/rest/services/encdirect/enc_coastal/MapServer/33/query"
+# Fallback: obstructions layer 30
+FALLBACK_URL = "https://encdirect.noaa.gov/arcgis/rest/services/encdirect/enc_coastal/MapServer/30/query"
 
 
 class NoaaWrecksAdapter(BaseAdapter):
@@ -77,9 +80,17 @@ class NoaaWrecksAdapter(BaseAdapter):
         try:
             resp = await self._request("GET", BASE_URL, params=api_params)
             data = resp.json()
-        except Exception as exc:
-            logger.error("NOAA Wrecks fetch failed: %s", exc)
-            return []
+            if not data.get("features"):
+                raise ValueError("No features from primary URL")
+        except Exception:
+            # Fallback to alternative service
+            logger.warning("NOAA Wrecks primary URL failed, trying fallback")
+            try:
+                resp = await self._request("GET", FALLBACK_URL, params=api_params)
+                data = resp.json()
+            except Exception as exc:
+                logger.error("NOAA Wrecks fetch failed (both URLs): %s", exc)
+                return []
 
         features = data.get("features", [])
         observations: list[dict[str, Any]] = []
@@ -94,7 +105,7 @@ class NoaaWrecksAdapter(BaseAdapter):
                 continue
 
             # Use discovery/sinking year if available
-            year = attrs.get("YEARSUNK") or attrs.get("YEARFOUND") or attrs.get("GP_QUALITY")
+            year = attrs.get("YEARSUNK") or attrs.get("YEARFOUND")
             try:
                 ts = datetime(int(year), 1, 1) if year and str(year).isdigit() else datetime(1900, 1, 1)
             except (ValueError, TypeError):

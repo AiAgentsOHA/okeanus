@@ -1,33 +1,40 @@
 """NOAA ERMA adapter — Environmental Response Management Application.
 
 NOAA's ERMA provides geospatial data for environmental incidents including
-oil spills, chemical releases, and natural hazards. Accessed via ArcGIS
-REST Feature Service. No auth required.
+oil spills, chemical releases, and natural hazards.
 
-Data source: https://erma.noaa.gov/
+The legacy ArcGIS endpoint (gis.response.restoration.noaa.gov) was
+decommissioned.  This adapter now fetches from the NOAA Incident News
+CSV export, which contains the same oil-spill / hazmat incident records
+(1970s-present). No auth required.
+
+Data source: https://incidentnews.noaa.gov/
 """
 
 from __future__ import annotations
 
+import csv
+import io
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from okeanus.adapters.base import BaseAdapter
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = (
-    "https://gis.response.restoration.noaa.gov/arcgis/rest/services"
-    "/ERMA_Public/MapServer/0/query"
-)
+CSV_URL = "https://incidentnews.noaa.gov/raw/incidents.csv"
 
 
 class NoaaErmaAdapter(BaseAdapter):
-    """Connector for NOAA ERMA ArcGIS REST endpoint (no auth required)."""
+    """Connector for NOAA ERMA / Incident News data (no auth required).
+
+    Fetches environmental incident records from the NOAA Incident News
+    CSV export since the original ArcGIS MapServer was retired.
+    """
 
     def __init__(self, **kwargs: Any) -> None:
-        super().__init__(requests_per_second=2.0, **kwargs)
+        super().__init__(requests_per_second=1.0, timeout=60.0, **kwargs)
 
     @property
     def source_name(self) -> str:
@@ -35,11 +42,11 @@ class NoaaErmaAdapter(BaseAdapter):
 
     @property
     def source_url(self) -> str:
-        return "https://erma.noaa.gov/"
+        return "https://incidentnews.noaa.gov/"
 
     @property
     def update_frequency(self) -> str:
-        return "daily"
+        return "weekly"
 
     async def fetch(
         self,
@@ -56,72 +63,88 @@ class NoaaErmaAdapter(BaseAdapter):
         """
         w, s, e, n = bbox
         limit = params.get("limit", 500)
-        incident_type = params.get("incident_type")
-
-        where = "1=1"
-        if incident_type:
-            where = f"IncidentType = '{incident_type}'"
-
-        api_params: dict[str, Any] = {
-            "where": where,
-            "geometry": f"{w},{s},{e},{n}",
-            "geometryType": "esriGeometryEnvelope",
-            "inSR": "4326",
-            "outSR": "4326",
-            "spatialRel": "esriSpatialRelIntersects",
-            "outFields": "*",
-            "returnGeometry": "true",
-            "resultRecordCount": limit,
-            "f": "json",
-        }
+        incident_type = (params.get("incident_type") or "").lower()
 
         try:
-            resp = await self._request("GET", BASE_URL, params=api_params)
-            data = resp.json()
+            resp = await self._request("GET", CSV_URL)
+            text = resp.text
         except Exception as exc:
-            logger.error("NOAA ERMA fetch failed: %s", exc)
+            logger.error("NOAA ERMA/Incident News fetch failed: %s", exc)
             return []
 
-        features = data.get("features", [])
         observations: list[dict[str, Any]] = []
+        reader = csv.DictReader(io.StringIO(text))
 
-        for feat in features:
-            geom = feat.get("geometry", {})
-            attrs = feat.get("attributes", {})
+        for row in reader:
+            if len(observations) >= limit:
+                break
 
-            lon = geom.get("x")
-            lat = geom.get("y")
-            if lon is None or lat is None:
+            # Parse date
+            date_str = row.get("open_date", row.get("Open Date", ""))
+            ts = _parse_date(date_str)
+            if ts is None:
                 continue
 
-            # Parse epoch timestamp
-            ts_raw = attrs.get("IncidentDate") or attrs.get("OpenDate")
-            if ts_raw and isinstance(ts_raw, (int, float)):
-                try:
-                    ts = datetime.fromtimestamp(ts_raw / 1000)
-                except (ValueError, OSError):
-                    ts = time_start
-            else:
-                ts = time_start
+            if ts < time_start or ts > time_end:
+                continue
+
+            # Parse coordinates & spatial filter
+            lat_str = row.get("lat", row.get("Latitude", ""))
+            lon_str = row.get("lon", row.get("Longitude", ""))
+            if not lat_str or not lon_str:
+                continue
+            try:
+                lat, lon = float(lat_str), float(lon_str)
+            except (ValueError, TypeError):
+                continue
+
+            if not (w <= lon <= e and s <= lat <= n):
+                continue
+
+            # Apply incident type filter
+            threat = row.get("threat", row.get("Threat", ""))
+            if incident_type and incident_type not in threat.lower():
+                continue
+
+            incident_id = row.get("id", row.get("ID", ""))
+            name = row.get("name", row.get("Name", ""))
+            commodity = row.get("commodity", row.get("Commodity", ""))
+            max_release = row.get("max_ptl_release_gallons",
+                                  row.get("Max Coverage", ""))
+            tags = row.get("tags", row.get("Tags", ""))
 
             observations.append({
                 "obs_type": "physical",
                 "timestamp": ts,
-                "geometry": {"type": "Point", "coordinates": [float(lon), float(lat)]},
-                "source_id": f"erma-{attrs.get('OBJECTID', '')}",
+                "geometry": {"type": "Point", "coordinates": [lon, lat]},
+                "source_id": f"erma-{incident_id}",
                 "source_name": "NOAA ERMA",
                 "quality_score": 0.85,
                 "payload": {
-                    "incident_name": attrs.get("IncidentName", attrs.get("Name", "")),
-                    "incident_type": attrs.get("IncidentType", ""),
-                    "status": attrs.get("Status", ""),
-                    "description": attrs.get("Description", ""),
-                    "open_date": attrs.get("OpenDate"),
-                    "close_date": attrs.get("CloseDate"),
-                    "responsible_party": attrs.get("ResponsibleParty", ""),
-                    "state": attrs.get("State", ""),
+                    "incident_name": name,
+                    "incident_type": threat,
+                    "commodity": commodity,
+                    "max_release_gallons": max_release,
+                    "tags": tags,
+                    "location": row.get("location", row.get("Location", "")),
+                    "status": "",
+                    "description": "",
                 },
             })
 
         logger.info("NOAA ERMA returned %d incidents", len(observations))
         return observations
+
+
+def _parse_date(s: str | None) -> datetime | None:
+    """Parse various date formats from the CSV."""
+    if not s:
+        return None
+    for fmt in ("%m/%d/%Y %H:%M", "%m/%d/%Y", "%Y-%m-%d", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime(str(s).strip()[:19], fmt).replace(
+                tzinfo=timezone.utc
+            )
+        except (ValueError, TypeError):
+            continue
+    return None

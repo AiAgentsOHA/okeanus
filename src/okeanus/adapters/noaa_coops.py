@@ -1,6 +1,7 @@
 """NOAA CO-OPS (Center for Operational Oceanographic Products and Services) adapter.
 
 Tides, water levels, currents, temperature, salinity at US coastal stations.
+API has a 31-day max range per request.
 
 API docs: https://api.tidesandcurrents.noaa.gov/api/prod/
 """
@@ -8,7 +9,7 @@ API docs: https://api.tidesandcurrents.noaa.gov/api/prod/
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from okeanus.adapters.base import BaseAdapter
@@ -40,7 +41,6 @@ class NoaaCoopsAdapter(BaseAdapter):
     async def _get_stations_in_bbox(
         self, bbox: tuple[float, float, float, float],
     ) -> list[dict[str, Any]]:
-        """Fetch station metadata and filter to those within bbox."""
         w, s, e, n = bbox
         try:
             resp = await self._request(
@@ -65,9 +65,10 @@ class NoaaCoopsAdapter(BaseAdapter):
         time_start: datetime,
         time_end: datetime,
     ) -> list[dict[str, Any]]:
-        """Fetch data for a single station."""
+        # API has 31-day max range — use most recent 30 days
+        begin = max(time_start, time_end - timedelta(days=30))
         params: dict[str, Any] = {
-            "begin_date": time_start.strftime("%Y%m%d"),
+            "begin_date": begin.strftime("%Y%m%d"),
             "end_date": time_end.strftime("%Y%m%d"),
             "station": station_id,
             "product": product,
@@ -93,9 +94,13 @@ class NoaaCoopsAdapter(BaseAdapter):
         time_end: datetime,
         **params: Any,
     ) -> list[dict[str, Any]]:
-        """Fetch water level/tide data for stations within bbox."""
         product = params.get("product", "water_level")
-        max_stations = params.get("max_stations", 10)
+        max_stations = min(params.get("max_stations", 3), 5)
+
+        # Narrow global bbox to US East Coast to avoid overwhelming station list
+        w, s, e, n = bbox
+        if (e - w) > 100 or (n - s) > 100:
+            bbox = (-82.0, 24.0, -66.0, 45.0)
 
         stations = await self._get_stations_in_bbox(bbox)
         if not stations:
@@ -104,6 +109,7 @@ class NoaaCoopsAdapter(BaseAdapter):
 
         stations = stations[:max_stations]
         observations: list[dict[str, Any]] = []
+        limit = params.get("limit", 500)
 
         for station in stations:
             station_id = str(station.get("id", ""))
@@ -118,7 +124,6 @@ class NoaaCoopsAdapter(BaseAdapter):
                 value = rec.get("v")
                 if not ts_str or value is None:
                     continue
-
                 try:
                     ts = datetime.fromisoformat(ts_str.replace(" ", "T") + "+00:00")
                     val = float(value)
@@ -141,9 +146,11 @@ class NoaaCoopsAdapter(BaseAdapter):
                         "quality_flag": rec.get("q", ""),
                     },
                 })
+                if len(observations) >= limit:
+                    break
+            if len(observations) >= limit:
+                break
 
-        logger.info(
-            "NOAA CO-OPS returned %d observations from %d stations",
-            len(observations), len(stations),
-        )
+        logger.info("NOAA CO-OPS returned %d observations from %d stations",
+                     len(observations), len(stations))
         return observations

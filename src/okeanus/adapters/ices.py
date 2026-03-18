@@ -16,7 +16,7 @@ from okeanus.adapters.base import BaseAdapter
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://sag.ices.dk/SAG-API/api"
+BASE_URL = "https://sag.ices.dk/SAG_API/api"
 
 # Approximate centroids for ICES ecoregions
 ECOREGION_COORDS: dict[str, tuple[float, float]] = {
@@ -36,6 +36,33 @@ ECOREGION_COORDS: dict[str, tuple[float, float]] = {
     "Black Sea": (35.0, 43.0),
     "Widely distributed": (0.0, 55.0),
 }
+
+# Keywords to match stock descriptions → ecoregion name.
+# Sorted longest-first so "Bay of Biscay" matches before "Baltic".
+_ECOREGION_KEYWORDS: list[tuple[str, str]] = sorted(
+    [
+        ("north sea", "Greater North Sea"),
+        ("celtic sea", "Celtic Seas"),
+        ("celtic seas", "Celtic Seas"),
+        ("bay of biscay", "Bay of Biscay and the Iberian Coast"),
+        ("biscay", "Bay of Biscay and the Iberian Coast"),
+        ("iberian", "Bay of Biscay and the Iberian Coast"),
+        ("cantabrian", "Bay of Biscay and the Iberian Coast"),
+        ("baltic", "Baltic Sea"),
+        ("norwegian sea", "Norwegian Sea"),
+        ("barents sea", "Barents Sea"),
+        ("iceland", "Iceland"),
+        ("greenland", "Greenland"),
+        ("azores", "Azores"),
+        ("arctic", "Arctic Ocean"),
+        ("faroe", "Faroes"),
+        ("northeast atlantic", "Oceanic Northeast Atlantic"),
+        ("mediterranean", "Mediterranean"),
+        ("black sea", "Black Sea"),
+    ],
+    key=lambda t: len(t[0]),
+    reverse=True,
+)
 
 
 class IcesAdapter(BaseAdapter):
@@ -80,24 +107,44 @@ class IcesAdapter(BaseAdapter):
         if stock_code := params.get("stock_code"):
             return await self._fetch_stock(stock_code, year, bbox)
 
-        try:
-            resp = await self._request(
-                "GET", f"{BASE_URL}/StockSummary",
-                params={"year": year},
-            )
-            data = resp.json()
-        except Exception as exc:
-            logger.error("ICES fetch failed: %s", exc)
+        # ICES data lags — try requested year, then fall back up to 3 years
+        data: list[Any] = []
+        for try_year in range(year, year - 4, -1):
+            try:
+                resp = await self._request(
+                    "GET", f"{BASE_URL}/StockList",
+                    params={"assessmentYear": try_year},
+                )
+                data = resp.json()
+            except Exception as exc:
+                logger.debug("ICES StockList year %d failed: %s", try_year, exc)
+                continue
+
+            records_raw = data if isinstance(data, list) else data.get("results", [data])
+            if records_raw:
+                logger.info("ICES: using assessment year %d", try_year)
+                data = records_raw
+                break
+        else:
+            logger.error("ICES fetch failed: no data for years %d–%d", year - 3, year)
             return []
 
-        records = data if isinstance(data, list) else data.get("results", [data])
+        records = data if isinstance(data, list) else [data]
         observations: list[dict[str, Any]] = []
 
         for rec in records:
             if not isinstance(rec, dict):
                 continue
 
+            # StockList doesn't return EcoRegion directly; infer from
+            # StockDescription using keyword matching.
             ecoregion = rec.get("EcoRegion", rec.get("ecoRegion", ""))
+            if not ecoregion:
+                desc = rec.get("StockDescription", "").lower()
+                for keyword, region_name in _ECOREGION_KEYWORDS:
+                    if keyword in desc:
+                        ecoregion = region_name
+                        break
             lon, lat = ECOREGION_COORDS.get(ecoregion, (0.0, 55.0))
 
             # Filter by bbox

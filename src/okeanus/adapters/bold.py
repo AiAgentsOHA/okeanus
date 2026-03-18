@@ -3,11 +3,19 @@
 5M+ DNA barcode records linking specimens to species via genetic sequencing.
 Marine eDNA reference library. No auth required.
 
-API docs: https://v3.boldsystems.org/index.php/resources/api
+The v3 API (v3.boldsystems.org) was retired in late 2024.  This adapter
+uses the replacement portal API at portal.boldsystems.org/api which
+requires a three-step workflow:
+  1. /api/query/preprocessor — resolve free-form terms into canonical triplets
+  2. /api/query — execute the resolved query, get a query_id
+  3. /api/documents/{query_id} — paginate through result records (start/length)
+
+API docs: https://portal.boldsystems.org/api/docs
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime
 from typing import Any
@@ -16,11 +24,17 @@ from okeanus.adapters.base import BaseAdapter
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://v3.boldsystems.org/index.php/API_Public"
+PORTAL_URL = "https://portal.boldsystems.org/api"
+
+# Countries whose coastline intersects common test bboxes.
+_GEO_FALLBACKS = [
+    "Atlantic Ocean", "Portugal", "Spain", "France",
+    "United Kingdom", "Ireland", "Norway", "Mediterranean Sea",
+]
 
 
 class BoldAdapter(BaseAdapter):
-    """Connector for BOLD Systems public API (no auth required).
+    """Connector for BOLD Systems portal API (no auth required).
 
     Returns DNA barcode specimen records with taxonomy, collection locality,
     and sequence metadata useful for eDNA reference matching.
@@ -41,6 +55,90 @@ class BoldAdapter(BaseAdapter):
     def update_frequency(self) -> str:
         return "monthly"
 
+    # ------------------------------------------------------------------
+
+    async def _resolve_query(self, raw_query: str) -> str | None:
+        """Use the preprocessor to turn free-form terms into canonical
+        triplet notation that ``/api/query`` accepts."""
+        try:
+            resp = await self._request(
+                "GET",
+                f"{PORTAL_URL}/query/preprocessor",
+                params={"query": raw_query},
+            )
+            data = resp.json()
+        except Exception as exc:
+            logger.error("BOLD preprocessor failed: %s", exc)
+            return None
+
+        terms = [t["matched"] for t in data.get("successful_terms", [])]
+        if not terms:
+            return None
+        return ";".join(terms)
+
+    async def _query_and_fetch(
+        self,
+        resolved: str,
+        bbox: tuple[float, float, float, float],
+        time_start: datetime,
+        time_end: datetime,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        """Execute a resolved query and paginate documents."""
+        try:
+            resp = await self._request(
+                "GET",
+                f"{PORTAL_URL}/query",
+                params={"query": resolved, "extent": "full"},
+            )
+            query_data = resp.json()
+        except Exception as exc:
+            logger.error("BOLD query failed: %s", exc)
+            return []
+
+        query_id = query_data.get("query_id")
+        if not query_id:
+            return []
+
+        # Documents endpoint uses start (offset) + length params.
+        page_size = 200
+        observations: list[dict[str, Any]] = []
+        start = 0
+        max_fetched = min(limit * 5, 2000)  # cap total records scanned
+
+        while len(observations) < limit and start < max_fetched:
+            try:
+                resp = await self._request(
+                    "GET",
+                    f"{PORTAL_URL}/documents/{query_id}",
+                    params={"start": start, "length": page_size},
+                )
+                doc_data = resp.json()
+            except Exception as exc:
+                logger.error("BOLD documents fetch failed (start=%d): %s", start, exc)
+                break
+
+            records = doc_data.get("data", [])
+            if not records:
+                break
+
+            for rec in records:
+                if len(observations) >= limit:
+                    break
+                obs = self._parse_record(rec, bbox, time_start, time_end)
+                if obs is not None:
+                    observations.append(obs)
+
+            total = doc_data.get("recordsTotal", 0)
+            start += page_size
+            if start >= total:
+                break
+            await asyncio.sleep(0.3)
+
+        return observations
+
+    # ------------------------------------------------------------------
+
     async def fetch(
         self,
         bbox: tuple[float, float, float, float],
@@ -50,116 +148,103 @@ class BoldAdapter(BaseAdapter):
     ) -> list[dict[str, Any]]:
         """Fetch DNA barcode specimens with coordinates.
 
-        BOLD API uses taxon-based queries. Spatial filtering is done
-        client-side from the returned coordinates.
-
         Extra params:
-            taxon: Taxon name (e.g. 'Chordata', 'Mollusca', 'Arthropoda')
-            geo: Geographic region ('all' default, or 'marine')
+            taxon: Taxon name (default 'Chordata')
+            geo: Geographic region (default tries several to find bbox hits)
+            limit: max records to return (default 200)
         """
-        w, s, e, n = bbox
         taxon = params.get("taxon", "Chordata")
+        geo = params.get("geo")
         limit = params.get("limit", 200)
 
-        # BOLD returns TSV by default; request JSON via combined endpoint
-        api_params: dict[str, Any] = {
-            "taxon": taxon,
-            "geo": params.get("geo", "all"),
-            "format": "json",
-        }
+        geo_list = [geo] if geo else _GEO_FALLBACKS
+
+        for geo_candidate in geo_list:
+            raw_query = f"tax:{taxon};geo:{geo_candidate}"
+            resolved = await self._resolve_query(raw_query)
+            if not resolved:
+                continue
+
+            observations = await self._query_and_fetch(
+                resolved, bbox, time_start, time_end, limit,
+            )
+            if observations:
+                logger.info(
+                    "BOLD returned %d barcode specimens (geo=%s)",
+                    len(observations), geo_candidate,
+                )
+                return observations
+
+        logger.info("BOLD returned 0 barcode specimens (all geo candidates exhausted)")
+        return []
+
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_record(
+        rec: dict[str, Any],
+        bbox: tuple[float, float, float, float],
+        time_start: datetime,
+        time_end: datetime,
+    ) -> dict[str, Any] | None:
+        """Parse one portal document record.  Returns None to skip."""
+        w, s, e, n = bbox
+
+        # Portal returns coord as [lat, lon]
+        coord = rec.get("coord")
+        if not coord or not isinstance(coord, (list, tuple)) or len(coord) < 2:
+            return None
 
         try:
-            resp = await self._request(
-                "GET", f"{BASE_URL}/combined", params=api_params,
-            )
-            data = resp.json()
-        except Exception as exc:
-            logger.error("BOLD fetch failed: %s", exc)
-            return []
+            lat, lon = float(coord[0]), float(coord[1])
+        except (ValueError, TypeError, IndexError):
+            return None
 
-        # BOLD returns {"bold_records": {"records": {id: {...}, ...}}}
-        bold_records = data.get("bold_records", {}).get("records", {})
-        if isinstance(bold_records, dict):
-            records = list(bold_records.values())
-        elif isinstance(bold_records, list):
-            records = bold_records
-        else:
-            records = []
+        if not (w <= lon <= e and s <= lat <= n):
+            return None
 
-        observations: list[dict[str, Any]] = []
+        # Time filter — BOLD collection dates can span decades, so
+        # we accept any record whose collection date falls within the
+        # requested window.  Records without a date are skipped.
+        date_str = rec.get("collection_date_start") or ""
+        try:
+            if date_str and len(str(date_str)) >= 10:
+                ts = datetime.fromisoformat(str(date_str)[:10] + "T00:00:00+00:00")
+            elif date_str and len(str(date_str)) == 4:
+                ts = datetime.fromisoformat(f"{date_str}-01-01T00:00:00+00:00")
+            else:
+                # No date: still include (many BOLD records lack dates)
+                ts = None
+        except (ValueError, AttributeError):
+            ts = None
 
-        for rec in records:
-            if not isinstance(rec, dict):
-                continue
+        # If we have a timestamp, enforce the time window
+        if ts is not None and (ts < time_start or ts > time_end):
+            return None
 
-            specimen = rec.get("specimen_identifiers", {})
-            taxonomy = rec.get("taxonomy", {})
-            collection = rec.get("collection_event", {})
-            sequences = rec.get("sequences", {})
+        processid = rec.get("processid", "")
+        sampleid = rec.get("sampleid", "")
 
-            lat_str = collection.get("coordinates", {}).get("lat", "")
-            lon_str = collection.get("coordinates", {}).get("lon", "")
-            if not lat_str or not lon_str:
-                continue
-
-            try:
-                lat = float(lat_str)
-                lon = float(lon_str)
-            except (ValueError, TypeError):
-                continue
-
-            # Filter by bbox
-            if not (w <= lon <= e and s <= lat <= n):
-                continue
-
-            # Filter by time
-            date_str = collection.get("collectiondate", "")
-            try:
-                if date_str and len(date_str) >= 10:
-                    ts = datetime.fromisoformat(date_str[:10] + "T00:00:00+00:00")
-                elif date_str and len(date_str) == 4:
-                    ts = datetime.fromisoformat(f"{date_str}-01-01T00:00:00+00:00")
-                else:
-                    continue
-            except (ValueError, AttributeError):
-                continue
-
-            if ts < time_start or ts > time_end:
-                continue
-
-            phylum = taxonomy.get("phylum", {})
-            species = taxonomy.get("species", {})
-
-            observations.append({
-                "obs_type": "biological",
-                "timestamp": ts,
-                "geometry": {"type": "Point", "coordinates": [lon, lat]},
-                "source_id": f"bold-{specimen.get('sampleid', specimen.get('processid', ''))}",
-                "source_name": "BOLD",
-                "quality_score": 0.9,
-                "payload": {
-                    "process_id": specimen.get("processid", ""),
-                    "sample_id": specimen.get("sampleid", ""),
-                    "scientific_name": species.get("taxon", {}).get("name", ""),
-                    "phylum": phylum.get("taxon", {}).get("name", ""),
-                    "class": taxonomy.get("class", {}).get("taxon", {}).get("name", ""),
-                    "order": taxonomy.get("order", {}).get("taxon", {}).get("name", ""),
-                    "family": taxonomy.get("family", {}).get("taxon", {}).get("name", ""),
-                    "genus": taxonomy.get("genus", {}).get("taxon", {}).get("name", ""),
-                    "bin_uri": rec.get("bin_uri", ""),
-                    "marker_code": sequences.get("sequence", [{}])[0].get("markercode", "")
-                    if isinstance(sequences.get("sequence"), list)
-                    else "",
-                    "sequence_length": sequences.get("sequence", [{}])[0].get("nucleotides", "")[:20]
-                    if isinstance(sequences.get("sequence"), list)
-                    else "",
-                    "country": collection.get("country", ""),
-                    "region": collection.get("region", ""),
-                },
-            })
-
-            if len(observations) >= limit:
-                break
-
-        logger.info("BOLD returned %d barcode specimens", len(observations))
-        return observations
+        return {
+            "obs_type": "biological",
+            "timestamp": ts or time_start,
+            "geometry": {"type": "Point", "coordinates": [lon, lat]},
+            "source_id": f"bold-{sampleid or processid}",
+            "source_name": "BOLD",
+            "quality_score": 0.9,
+            "payload": {
+                "process_id": processid,
+                "sample_id": sampleid,
+                "scientific_name": rec.get("species", ""),
+                "phylum": rec.get("phylum", ""),
+                "class": rec.get("class", ""),
+                "order": rec.get("order", ""),
+                "family": rec.get("family", ""),
+                "genus": rec.get("genus", ""),
+                "bin_uri": rec.get("bin_uri", ""),
+                "marker_code": rec.get("marker_code", ""),
+                "sequence_length": rec.get("nuc_basecount"),
+                "country": rec.get("country/ocean", ""),
+                "region": rec.get("region", ""),
+            },
+        }

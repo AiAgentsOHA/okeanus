@@ -220,6 +220,226 @@ class KnowledgeGraphBuilder:
         return len(edges)
 
     # ------------------------------------------------------------------
+    # Semantic similarity edges from embeddings
+    # ------------------------------------------------------------------
+
+    async def build_semantic_edges(
+        self,
+        session: AsyncSession,
+        min_similarity: float = 0.8,
+        max_edges: int = 5000,
+    ) -> int:
+        """Create edges between entities with similar embeddings.
+
+        Queries pgvector for cross-source-type embedding pairs above threshold.
+        Creates RELATES_TO edges with strength = cosine similarity.
+        """
+        sql = text("""
+            SELECT
+                e1.source_id AS a_id,
+                e1.source_type AS a_type,
+                e1.text_content AS a_text,
+                e2.source_id AS b_id,
+                e2.source_type AS b_type,
+                e2.text_content AS b_text,
+                1 - (e1.embedding <=> e2.embedding) AS similarity
+            FROM embeddings e1
+            JOIN embeddings e2 ON e1.id < e2.id
+                AND e1.source_type != e2.source_type
+            WHERE 1 - (e1.embedding <=> e2.embedding) >= :min_sim
+            ORDER BY e1.embedding <=> e2.embedding
+            LIMIT :lim
+        """)
+        rows = (await session.execute(sql, {
+            "min_sim": min_similarity,
+            "lim": max_edges,
+        })).fetchall()
+
+        if not rows:
+            return 0
+
+        edges: list[dict[str, Any]] = []
+        for row in rows:
+            similarity = float(row.similarity)
+            edges.append({
+                "id": uuid.uuid4(),
+                "source_id": row.a_id,
+                "source_type": row.a_type,
+                "source_label": (row.a_text[:100] if row.a_text else None),
+                "target_id": row.b_id,
+                "target_type": row.b_type,
+                "target_label": (row.b_text[:100] if row.b_text else None),
+                "edge_type": EdgeType.RELATES_TO.value,
+                "strength": round(similarity, 4),
+                "evidence_type": "semantic_similarity",
+                "evidence_detail": f"cosine_sim={similarity:.4f}",
+                "domain": None,
+                "payload": None,
+            })
+
+        if edges:
+            await session.execute(insert(KnowledgeEdge).values(edges))
+        logger.info("Created %d semantic similarity edges", len(edges))
+        return len(edges)
+
+    # ------------------------------------------------------------------
+    # Correlation-discovered edges
+    # ------------------------------------------------------------------
+
+    async def build_correlation_edges(
+        self,
+        session: AsyncSession,
+        correlations: list[dict[str, Any]],
+    ) -> int:
+        """Create CORRELATES_WITH edges from correlator discoveries.
+
+        Each correlation result should have code_a, code_b, and statistical
+        evidence (correlation, p_value, lag_days, method).
+        """
+        if not correlations:
+            return 0
+
+        # Look up entity IDs for time series codes
+        codes = set()
+        for c in correlations:
+            ev = c.get("evidence", c)
+            codes.add(ev.get("code_a", ""))
+            codes.add(ev.get("code_b", ""))
+        codes.discard("")
+
+        if not codes:
+            return 0
+
+        # Map time series codes -> entity IDs via the time_series table
+        placeholders = ", ".join(f":c{i}" for i in range(len(codes)))
+        code_list = list(codes)
+        params = {f"c{i}": code for i, code in enumerate(code_list)}
+        sql = text(f"""
+            SELECT DISTINCT code, entity_id
+            FROM time_series
+            WHERE code IN ({placeholders})
+              AND entity_id IS NOT NULL
+        """)
+        rows = (await session.execute(sql, params)).fetchall()
+        code_to_entity: dict[str, uuid.UUID] = {
+            row.code: row.entity_id for row in rows
+        }
+
+        edges: list[dict[str, Any]] = []
+        for c in correlations:
+            ev = c.get("evidence", c)
+            code_a = ev.get("code_a", "")
+            code_b = ev.get("code_b", "")
+            entity_a = code_to_entity.get(code_a)
+            entity_b = code_to_entity.get(code_b)
+
+            if not entity_a or not entity_b or entity_a == entity_b:
+                continue
+
+            corr_val = ev.get("correlation", 0)
+            edges.append({
+                "id": uuid.uuid4(),
+                "source_id": entity_a,
+                "source_type": NodeType.ENTITY.value,
+                "source_label": code_a,
+                "target_id": entity_b,
+                "target_type": NodeType.ENTITY.value,
+                "target_label": code_b,
+                "edge_type": EdgeType.CORRELATES_WITH.value,
+                "strength": round(abs(corr_val), 4),
+                "evidence_type": "statistical_correlation",
+                "evidence_detail": (
+                    f"r={corr_val}, p={ev.get('p_value', 'N/A')}, "
+                    f"lag={ev.get('lag_days', 0)}d, method={ev.get('method', 'pearson')}"
+                ),
+                "domain": None,
+                "payload": {
+                    "correlation": corr_val,
+                    "p_value": ev.get("p_value"),
+                    "lag_days": ev.get("lag_days", 0),
+                    "method": ev.get("method", "pearson"),
+                    "n_points": ev.get("n_points"),
+                },
+            })
+
+        if edges:
+            await session.execute(insert(KnowledgeEdge).values(edges))
+        logger.info("Created %d correlation edges", len(edges))
+        return len(edges)
+
+    # ------------------------------------------------------------------
+    # One-shot backfill pipeline
+    # ------------------------------------------------------------------
+
+    async def backfill_all(
+        self,
+        session: AsyncSession,
+        run_correlations: bool = True,
+    ) -> dict[str, int]:
+        """Run the full graph backfill pipeline.
+
+        1. sync_from_relationships() — migrate existing relationships table
+        2. build_spatial_edges() — entities within 50km
+        3. build_semantic_edges() — entities with similar embeddings
+        4. Run correlator auto-discovery + create correlation edges (optional)
+        """
+        counts: dict[str, int] = {}
+
+        # 1. Relationships
+        try:
+            counts["relationships"] = await self.sync_from_relationships(session)
+            await session.commit()
+            logger.info("Backfill: %d relationship edges", counts["relationships"])
+        except Exception as exc:
+            await session.rollback()
+            logger.warning("Backfill relationships failed: %s", exc)
+            counts["relationships"] = 0
+
+        # 2. Spatial edges
+        try:
+            counts["spatial"] = await self.build_spatial_edges(session)
+            await session.commit()
+            logger.info("Backfill: %d spatial edges", counts["spatial"])
+        except Exception as exc:
+            await session.rollback()
+            logger.warning("Backfill spatial failed: %s", exc)
+            counts["spatial"] = 0
+
+        # 3. Semantic similarity edges
+        try:
+            counts["semantic"] = await self.build_semantic_edges(session)
+            await session.commit()
+            logger.info("Backfill: %d semantic edges", counts["semantic"])
+        except Exception as exc:
+            await session.rollback()
+            logger.warning("Backfill semantic failed: %s", exc)
+            counts["semantic"] = 0
+
+        # 4. Correlation-discovered edges
+        if run_correlations:
+            try:
+                from okeanus.ml.synthesis.correlator import CorrelationEngine
+                engine = CorrelationEngine()
+                scan_results = await engine.full_scan(session)
+                temporal = [
+                    r for r in scan_results
+                    if r.get("correlation_type") == "temporal"
+                ]
+                counts["correlation"] = await self.build_correlation_edges(
+                    session, temporal,
+                )
+                await session.commit()
+                logger.info("Backfill: %d correlation edges", counts["correlation"])
+            except Exception as exc:
+                await session.rollback()
+                logger.warning("Backfill correlations failed: %s", exc)
+                counts["correlation"] = 0
+
+        counts["total"] = sum(counts.values())
+        logger.info("Backfill complete: %d total edges", counts["total"])
+        return counts
+
+    # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 

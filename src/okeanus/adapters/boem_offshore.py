@@ -21,7 +21,7 @@ BASE_URL = "https://gis.boem.gov/arcgis/rest/services"
 
 # Key BOEM feature services
 LAYERS = {
-    "wind_leases": f"{BASE_URL}/BOEM_BSEE/Renewable_Energy_Leases/MapServer/0",
+    "wind_leases": "https://services7.arcgis.com/G5Ma95RzqJRPKsWL/arcgis/rest/services/Wind_Leases__BOEM_/FeatureServer/0",
     "wind_planning": f"{BASE_URL}/BOEM_BSEE/Wind_Planning_Areas/MapServer/0",
     "oil_gas_leases": f"{BASE_URL}/BOEM_BSEE/Active_Leases/MapServer/0",
     "platforms": f"{BASE_URL}/BOEM_BSEE/Platform_Structures/MapServer/0",
@@ -122,7 +122,11 @@ class BoemOffshoreAdapter(BaseAdapter):
                 if isinstance(lease_date, (int, float)) and lease_date > 1e10:
                     ts = datetime.fromtimestamp(lease_date / 1000)
                 elif isinstance(lease_date, str) and lease_date:
-                    ts = datetime.strptime(lease_date[:10], "%Y-%m-%d")
+                    # Try MM/DD/YYYY first, then YYYY-MM-DD
+                    if "/" in lease_date:
+                        ts = datetime.strptime(lease_date.strip(), "%m/%d/%Y")
+                    else:
+                        ts = datetime.strptime(lease_date[:10], "%Y-%m-%d")
                 else:
                     ts = datetime.now()
             except (ValueError, TypeError, OSError):

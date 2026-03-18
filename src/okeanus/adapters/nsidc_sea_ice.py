@@ -16,7 +16,7 @@ from okeanus.adapters.base import BaseAdapter
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://noaadata.apps.nsidc.org/NOAA/G02135/seaice_analysis"
+BASE_URL = "https://noaadata.apps.nsidc.org/NOAA/G02135"
 
 
 class NsidcSeaIceAdapter(BaseAdapter):
@@ -54,74 +54,84 @@ class NsidcSeaIceAdapter(BaseAdapter):
         """
         hemisphere = params.get("hemisphere", "north")
         hemi_code = "N" if hemisphere == "north" else "S"
+        hemi_dir = "north" if hemisphere == "north" else "south"
 
-        csv_url = f"{BASE_URL}/{hemi_code}_Sea_Ice_Index_Regional_Monthly_Data_G02135_v3.0.csv"
-
-        try:
-            resp = await self._request("GET", csv_url)
-            text = resp.text
-        except Exception as exc:
-            logger.error("NSIDC Sea Ice fetch failed: %s", exc)
-            return []
-
-        lines = text.strip().split("\n")
-        if len(lines) < 2:
-            return []
-
-        header = lines[0].split(",")
+        # Fetch all 12 per-month CSV files and combine
         observations: list[dict[str, Any]] = []
+        limit = params.get("limit", 500)
 
-        for line in lines[1:]:
-            cols = line.split(",")
-            if len(cols) < len(header):
-                continue
-
-            row = dict(zip(header, cols))
-            year_str = row.get("year", "").strip()
-            month_str = row.get("month", row.get("mo", "")).strip()
-
-            if not year_str or not month_str:
-                continue
-
+        for month_num in range(1, 13):
+            csv_url = (
+                f"{BASE_URL}/{hemi_dir}/monthly/data"
+                f"/{hemi_code}_{month_num:02d}_extent_v4.0.csv"
+            )
             try:
-                year = int(year_str)
-                month = int(month_str)
-                ts = datetime(year, month, 1)
-            except (ValueError, TypeError):
+                resp = await self._request("GET", csv_url)
+                text = resp.text
+            except Exception:
                 continue
 
-            if ts < time_start or ts > time_end:
+            lines = text.strip().split("\n")
+            if len(lines) < 2:
                 continue
 
-            extent_str = row.get("extent", row.get("Extent", "")).strip()
-            area_str = row.get("area", row.get("Area", "")).strip()
+            header = [h.strip() for h in lines[0].split(",")]
 
-            try:
-                extent = float(extent_str) if extent_str and extent_str != "-9999" else None
-            except ValueError:
-                extent = None
-            try:
-                area = float(area_str) if area_str and area_str != "-9999" else None
-            except ValueError:
-                area = None
+            for line in lines[1:]:
+                cols = line.split(",")
+                if len(cols) < len(header):
+                    continue
 
-            pole_lat = 90.0 if hemisphere == "north" else -90.0
+                row = dict(zip(header, cols))
+                year_str = row.get("year", "").strip()
+                month_str = row.get("mo", "").strip()
 
-            observations.append({
-                "obs_type": "physical",
-                "timestamp": ts,
-                "geometry": {"type": "Point", "coordinates": [0.0, pole_lat]},
-                "source_id": f"nsidc-ice-{hemi_code}-{year}-{month:02d}",
-                "source_name": "NSIDC Sea Ice Index",
-                "quality_score": 0.95,
-                "payload": {
-                    "hemisphere": hemisphere,
-                    "year": year,
-                    "month": month,
-                    "extent_million_km2": extent,
-                    "area_million_km2": area,
-                },
-            })
+                if not year_str or not month_str:
+                    continue
+
+                try:
+                    year = int(year_str)
+                    month = int(month_str)
+                    ts = datetime(year, month, 1, tzinfo=time_start.tzinfo)
+                except (ValueError, TypeError):
+                    continue
+
+                if ts < time_start or ts > time_end:
+                    continue
+
+                extent_str = row.get("extent", "").strip()
+                area_str = row.get("area", "").strip()
+
+                try:
+                    extent = float(extent_str) if extent_str and extent_str != "-9999" else None
+                except ValueError:
+                    extent = None
+                try:
+                    area = float(area_str) if area_str and area_str != "-9999" else None
+                except ValueError:
+                    area = None
+
+                pole_lat = 90.0 if hemisphere == "north" else -90.0
+
+                observations.append({
+                    "obs_type": "physical",
+                    "timestamp": ts,
+                    "geometry": {"type": "Point", "coordinates": [0.0, pole_lat]},
+                    "source_id": f"nsidc-ice-{hemi_code}-{year}-{month:02d}",
+                    "source_name": "NSIDC Sea Ice Index",
+                    "quality_score": 0.95,
+                    "payload": {
+                        "hemisphere": hemisphere,
+                        "year": year,
+                        "month": month,
+                        "extent_million_km2": extent,
+                        "area_million_km2": area,
+                    },
+                })
+                if len(observations) >= limit:
+                    break
+            if len(observations) >= limit:
+                break
 
         logger.info("NSIDC Sea Ice returned %d records", len(observations))
         return observations

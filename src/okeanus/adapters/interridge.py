@@ -1,13 +1,13 @@
 """InterRidge Vents adapter — global hydrothermal vent database.
 
-Locations and characteristics of known seafloor hydrothermal vents.
-Maintained by the InterRidge community. No auth required.
-
-Data source: https://vents-data.interridge.org/
+Static dataset of 721 vent fields from PANGAEA. No auth required.
+Data source: https://doi.pangaea.de/10.1594/PANGAEA.917894
 """
 
 from __future__ import annotations
 
+import csv
+import io
 import logging
 from datetime import datetime
 from typing import Any
@@ -16,14 +16,18 @@ from okeanus.adapters.base import BaseAdapter
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://vents-data.interridge.org/api"
+# Direct link to the actual CSV data file hosted on PANGAEA
+CSV_URL = (
+    "https://hs.pangaea.de/Maps/Vents/InterRidge_Beaulieu_2020"
+    "/vent_fields_all_20200325cleansorted.csv"
+)
 
 
 class InterRidgeAdapter(BaseAdapter):
     """Connector for InterRidge hydrothermal vent database (no auth)."""
 
     def __init__(self, **kwargs: Any) -> None:
-        super().__init__(requests_per_second=1.0, **kwargs)
+        super().__init__(requests_per_second=1.0, timeout=60.0, **kwargs)
 
     @property
     def source_name(self) -> str:
@@ -44,84 +48,55 @@ class InterRidgeAdapter(BaseAdapter):
         time_end: datetime,
         **params: Any,
     ) -> list[dict[str, Any]]:
-        """Fetch hydrothermal vent locations within bbox.
-
-        Time range is largely ignored — vent locations are static reference data.
-
-        Extra params:
-            activity: 'active', 'inactive', 'inferred', or 'all' (default)
-            max_depth_m: Maximum depth filter
-        """
         w, s, e, n = bbox
         limit = params.get("limit", 500)
 
-        api_params: dict[str, Any] = {
-            "minlon": w,
-            "minlat": s,
-            "maxlon": e,
-            "maxlat": n,
-            "limit": limit,
-            "format": "json",
-        }
-        if activity := params.get("activity"):
-            if activity != "all":
-                api_params["activity"] = activity
-
         try:
-            resp = await self._request(
-                "GET", f"{BASE_URL}/ventfields", params=api_params,
-            )
-            data = resp.json()
+            resp = await self._request("GET", CSV_URL)
+            text = resp.text
         except Exception as exc:
-            logger.error("InterRidge fetch failed: %s", exc)
+            logger.error("InterRidge PANGAEA fetch failed: %s", exc)
             return []
 
-        results = data if isinstance(data, list) else data.get("features", data.get("results", []))
+        reader = csv.DictReader(io.StringIO(text))
         observations: list[dict[str, Any]] = []
 
-        for rec in results:
-            if not isinstance(rec, dict):
-                continue
-
-            # Handle GeoJSON-style or flat records
-            if "geometry" in rec and "properties" in rec:
-                coords = rec["geometry"].get("coordinates", [])
-                props = rec["properties"]
-                lon, lat = (coords[0], coords[1]) if len(coords) >= 2 else (None, None)
-            else:
-                lon = rec.get("longitude", rec.get("lon"))
-                lat = rec.get("latitude", rec.get("lat"))
-                props = rec
-
-            if lon is None or lat is None:
-                continue
-
-            year = props.get("yearDiscovered") or props.get("year_discovered")
+        for row in reader:
             try:
-                ts = datetime(int(year), 1, 1) if year else datetime(2000, 1, 1)
+                lat = float(row.get("Latitude", ""))
+                lon = float(row.get("Longitude", ""))
             except (ValueError, TypeError):
-                ts = datetime(2000, 1, 1)
+                continue
+
+            if not (w <= lon <= e and s <= lat <= n):
+                continue
+
+            name = row.get("Name.ID", "")
+            depth_str = row.get("Maximum.or.Single.Reported.Depth", "")
+            try:
+                depth = float(depth_str) if depth_str and depth_str != "NA" else None
+            except ValueError:
+                depth = None
 
             observations.append({
                 "obs_type": "physical",
-                "timestamp": ts,
-                "geometry": {"type": "Point", "coordinates": [float(lon), float(lat)]},
-                "source_id": f"interridge-{props.get('id', props.get('name_id', ''))}",
+                "timestamp": datetime(2020, 1, 1),  # Static reference data
+                "geometry": {"type": "Point", "coordinates": [lon, lat]},
+                "source_id": f"interridge-{name or len(observations)}",
                 "source_name": "InterRidge",
                 "quality_score": 0.9,
                 "payload": {
-                    "vent_name": props.get("name", props.get("ventName", "")),
-                    "activity": props.get("activity", ""),
-                    "region": props.get("region", ""),
-                    "ocean": props.get("ocean", ""),
-                    "tectonic_setting": props.get("tectonicSetting", ""),
-                    "max_depth_m": props.get("maxDepth", props.get("depth")),
-                    "max_temp_c": props.get("maxTemp", props.get("temperature")),
-                    "host_rock": props.get("hostRock", ""),
-                    "minerals": props.get("minerals", ""),
-                    "notes": str(props.get("notes", ""))[:500],
+                    "vent_name": name,
+                    "activity": row.get("Activity", ""),
+                    "region": row.get("Region", ""),
+                    "tectonic_setting": row.get("Tectonic.setting", ""),
+                    "max_depth_m": depth,
+                    "ocean": row.get("Ocean", ""),
+                    "max_temperature": row.get("Maximum.Temperature", ""),
                 },
             })
+            if len(observations) >= limit:
+                break
 
         logger.info("InterRidge returned %d vent fields", len(observations))
         return observations

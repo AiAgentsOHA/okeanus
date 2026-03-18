@@ -21,9 +21,9 @@ BASE_URL = "https://services.arcgis.com"
 
 # Crown Estate / Marine Data Exchange feature services
 LAYERS = {
-    "offshore_wind_sites": f"{BASE_URL}/JJzESW51TqeY9uat/ArcGIS/rest/services/UK_Offshore_Wind_Farms/FeatureServer/0",
-    "cable_routes": f"{BASE_URL}/JJzESW51TqeY9uat/ArcGIS/rest/services/Offshore_Cable_Routes/FeatureServer/0",
-    "lease_areas": f"{BASE_URL}/JJzESW51TqeY9uat/ArcGIS/rest/services/Crown_Estate_Lease_Areas/FeatureServer/0",
+    "offshore_wind_sites": f"{BASE_URL}/JJzESW51TqeY9uat/ArcGIS/rest/services/offshore_wind_leases/FeatureServer/0",
+    "cable_routes": f"{BASE_URL}/JJzESW51TqeY9uat/ArcGIS/rest/services/East_Coast_Wind_Farm_Export_Cable_Routes/FeatureServer/0",
+    "lease_areas": f"{BASE_URL}/JJzESW51TqeY9uat/ArcGIS/rest/services/East_Coast_Offshore_Wind_Leases/FeatureServer/0",
 }
 
 
@@ -121,18 +121,18 @@ class CrownEstateAdapter(BaseAdapter):
                     "type": "Point",
                     "coordinates": coords if isinstance(coords, list) and len(coords) >= 2 else [-2.0, 53.0],
                 },
-                "source_id": f"ce-{layer}-{props.get('Name') or props.get('OBJECTID', len(observations))}",
+                "source_id": f"ce-{layer}-{props.get('NAME_PROP') or props.get('Name') or props.get('OBJECTID', len(observations))}",
                 "source_name": "Crown Estate UK",
                 "quality_score": 0.95,
                 "payload": {
                     "layer": layer,
-                    "name": props.get("Name") or props.get("name") or props.get("Site_Name", ""),
-                    "operator": props.get("Operator") or props.get("Developer", ""),
-                    "status": props.get("Status") or props.get("status", ""),
-                    "capacity_mw": props.get("Capacity_MW") or props.get("Capacity_") or props.get("capacity"),
+                    "name": props.get("NAME_PROP") or props.get("Name") or props.get("name", ""),
+                    "operator": props.get("NAME_TEN") or props.get("Operator") or props.get("Developer", ""),
+                    "status": props.get("INF_STATUS") or props.get("LEASE_STAT") or props.get("Status", ""),
+                    "round": props.get("WIND_ROUND") or props.get("Round", ""),
+                    "capacity_mw": props.get("Capacity_MW") or props.get("Capacity_"),
                     "turbines": props.get("No_Turbines") or props.get("Turbines"),
-                    "round": props.get("Round") or props.get("Leasing_Round", ""),
-                    "area_km2": props.get("Area_km2") or props.get("area"),
+                    "area_km2": props.get("Shape__Area"),
                     "water_depth_m": props.get("Water_Depth") or props.get("Depth"),
                     "distance_shore_km": props.get("Distance_Shore") or props.get("Shore_Dist"),
                 },

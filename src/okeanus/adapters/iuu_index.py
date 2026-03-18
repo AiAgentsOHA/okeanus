@@ -3,13 +3,16 @@
 IUU (Illegal, Unreported and Unregulated) fishing risk scores
 for coastal, flag, port, and market states based on 40 indicators.
 
-Data: Poseidon Aquatic Resource Management / NOAA / Global Initiative.
+Data: CSV download from iuufishingindex.net (ZIP archive).
 No auth required.
 """
 
 from __future__ import annotations
 
+import csv
+import io
 import logging
+import zipfile
 from datetime import datetime
 from typing import Any
 
@@ -17,15 +20,15 @@ from okeanus.adapters.base import BaseAdapter
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://iuufishingindex.net/api/v1"
-RANKINGS_URL = f"{BASE_URL}/rankings"
+ZIP_URL = "https://iuufishingindex.net/downloads/iuu_fishing_index_2025-data_and_disclaimer.zip"
+CSV_FILENAME = "iuu_fishing_index_2019-2025_indicator_scores.xlsx - 2019-2025 indicator scores.csv"
 
 
 class IuuIndexAdapter(BaseAdapter):
     """Connector for IUU Fishing Index — country compliance (no auth).
 
-    Returns IUU fishing risk scores and rankings for countries as
-    coastal, flag, port, and market states.
+    Downloads the indicator-level CSV from the IUU Fishing Index website
+    and computes average scores per country for the requested years.
     """
 
     def __init__(self, **kwargs: Any) -> None:
@@ -52,77 +55,119 @@ class IuuIndexAdapter(BaseAdapter):
     ) -> list[dict[str, Any]]:
         """Fetch IUU Fishing Index country rankings.
 
+        Downloads the ZIP with indicator-level CSV and computes average
+        scores per country for the requested time range.
+
         Extra params:
-            country: ISO3 country code
-            state_type: 'overall', 'coastal', 'flag', 'port', 'market'
+            country: country name filter
             limit: max records (default: 200)
         """
-        country = params.get("country")
-        state_type = params.get("state_type", "overall")
+        country_filter = params.get("country")
         limit = params.get("limit", 200)
 
-        query: dict[str, Any] = {
-            "type": state_type,
-            "limit": limit,
-            "format": "json",
-        }
-        if country:
-            query["country"] = country
-
+        # Download ZIP
         try:
-            resp = await self._request("GET", RANKINGS_URL, params=query)
-            data = resp.json()
+            resp = await self._request("GET", ZIP_URL)
+            zip_bytes = resp.content
         except Exception as exc:
-            logger.error("IUU Index fetch failed: %s", exc)
+            logger.error("IUU Index ZIP download failed: %s", exc)
             return []
 
-        records = data if isinstance(data, list) else data.get("rankings", data.get("countries", data.get("data", [])))
-        if not isinstance(records, list):
-            records = []
+        # Extract CSV from ZIP
+        try:
+            zf = zipfile.ZipFile(io.BytesIO(zip_bytes))
+            csv_data = zf.read(CSV_FILENAME).decode("utf-8")
+        except Exception as exc:
+            logger.error("IUU Index ZIP extraction failed: %s", exc)
+            return []
 
-        observations: list[dict[str, Any]] = []
+        # Parse CSV: columns are Indicator ID, Indicator name, Country,
+        # Region, Ocean, Resp, Type, Year, Score
+        year_start = time_start.year
+        year_end = time_end.year
+        # Available years: 2019, 2021, 2023, 2025
+        valid_years = {str(y) for y in range(year_start, year_end + 1)}
 
-        for rec in records:
-            if not isinstance(rec, dict):
+        # Aggregate scores per (country, year)
+        country_data: dict[tuple[str, str], dict[str, Any]] = {}
+
+        reader = csv.DictReader(io.StringIO(csv_data))
+        for row in reader:
+            yr = row.get("Year", "")
+            if yr not in valid_years:
                 continue
 
-            country_name = rec.get("country") or rec.get("Country") or rec.get("name", "")
-            country_code = rec.get("iso3") or rec.get("ISO3") or rec.get("country_code", "")
-            score = rec.get("score") or rec.get("Score") or rec.get("overall_score")
-            rank = rec.get("rank") or rec.get("Rank") or rec.get("position")
+            cname = row.get("Country", "")
+            if country_filter and country_filter.lower() not in cname.lower():
+                continue
 
-            year = rec.get("year") or rec.get("Year") or time_end.year
+            key = (cname, yr)
+            if key not in country_data:
+                country_data[key] = {
+                    "country": cname,
+                    "region": row.get("Region", ""),
+                    "ocean": row.get("Ocean", ""),
+                    "year": yr,
+                    "scores": [],
+                    "vulnerability_scores": [],
+                    "prevalence_scores": [],
+                    "response_scores": [],
+                }
+
             try:
-                ts = datetime(int(year), 1, 1)
+                score = float(row.get("Score", ""))
             except (ValueError, TypeError):
-                ts = datetime.now()
+                continue
 
-            if ts < time_start or ts > time_end:
+            country_data[key]["scores"].append(score)
+            score_type = row.get("Type", "").lower()
+            if "vulnerability" in score_type:
+                country_data[key]["vulnerability_scores"].append(score)
+            elif "prevalence" in score_type:
+                country_data[key]["prevalence_scores"].append(score)
+            elif "response" in score_type:
+                country_data[key]["response_scores"].append(score)
+
+        # Build observations
+        observations: list[dict[str, Any]] = []
+
+        for (cname, yr), info in country_data.items():
+            scores = info["scores"]
+            if not scores:
+                continue
+
+            avg_score = sum(scores) / len(scores)
+            vuln = info["vulnerability_scores"]
+            prev = info["prevalence_scores"]
+            resp_scores = info["response_scores"]
+
+            try:
+                ts = datetime(int(yr), 1, 1)
+            except (ValueError, TypeError):
                 continue
 
             observations.append({
                 "obs_type": "economic",
                 "timestamp": ts,
                 "geometry": {"type": "Point", "coordinates": [0, 0]},
-                "source_id": f"iuu-idx-{country_code}-{state_type}-{year}",
+                "source_id": f"iuu-idx-{cname.replace(' ', '_')}-{yr}",
                 "source_name": "IUU Fishing Index",
                 "quality_score": 0.90,
                 "payload": {
-                    "country_name": country_name,
-                    "country_code": country_code,
-                    "state_type": state_type,
-                    "overall_score": score,
-                    "rank": rank,
-                    "coastal_score": rec.get("coastal_score") or rec.get("Coastal"),
-                    "flag_score": rec.get("flag_score") or rec.get("Flag"),
-                    "port_score": rec.get("port_score") or rec.get("Port"),
-                    "market_score": rec.get("market_score") or rec.get("Market"),
-                    "year": int(year),
-                    "vulnerability": rec.get("vulnerability"),
-                    "prevalence": rec.get("prevalence"),
-                    "response": rec.get("response"),
+                    "country_name": cname,
+                    "region": info["region"],
+                    "ocean": info["ocean"],
+                    "overall_score": round(avg_score, 2),
+                    "n_indicators": len(scores),
+                    "vulnerability": round(sum(vuln) / len(vuln), 2) if vuln else None,
+                    "prevalence": round(sum(prev) / len(prev), 2) if prev else None,
+                    "response": round(sum(resp_scores) / len(resp_scores), 2) if resp_scores else None,
+                    "year": int(yr),
                 },
             })
+
+            if len(observations) >= limit:
+                break
 
         logger.info("IUU Index returned %d country scores", len(observations))
         return observations

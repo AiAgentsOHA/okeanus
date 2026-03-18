@@ -18,7 +18,7 @@ from okeanus.adapters.base import BaseAdapter
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://marineregions.org/rest/"
+BASE_URL = "https://www.marineregions.org/rest/"
 
 
 class MarineRegionsAdapter(BaseAdapter):
@@ -88,14 +88,9 @@ class MarineRegionsAdapter(BaseAdapter):
 
         Uses the getGazetteerRecordsByLatLong endpoint filtered to EEZ type.
         """
-        url = f"{BASE_URL}getGazetteerRecordsByLatLong/"
-        params: dict[str, Any] = {
-            "latitude": lat,
-            "longitude": lon,
-            "format": "json",
-        }
+        url = f"{BASE_URL}getGazetteerRecordsByLatLong.json/{lat}/{lon}/"
         try:
-            resp = await self._request("GET", url, params=params)
+            resp = await self._request("GET", url)
             data = resp.json()
             return data if isinstance(data, list) else []
         except httpx.HTTPStatusError:
@@ -120,4 +115,32 @@ class MarineRegionsAdapter(BaseAdapter):
         """
         center_lon = (bbox[0] + bbox[2]) / 2.0
         center_lat = (bbox[1] + bbox[3]) / 2.0
-        return await self.get_eez_by_point(center_lat, center_lon)
+        limit = params.get("limit", 20)
+
+        raw = await self.get_eez_by_point(center_lat, center_lon)
+
+        observations: list[dict[str, Any]] = []
+        for rec in raw[:limit]:
+            if not isinstance(rec, dict):
+                continue
+            # Use response lat/lon if available, otherwise use the input center point
+            lat = rec.get("latitude", center_lat)
+            lon = rec.get("longitude", center_lon)
+            if lat is None or lon is None:
+                lat, lon = center_lat, center_lon
+            observations.append({
+                "obs_type": "physical",
+                "timestamp": time_start,
+                "geometry": {"type": "Point", "coordinates": [float(lon), float(lat)]},
+                "source_id": f"mr-{rec.get('MRGID', '')}",
+                "source_name": "Marine Regions",
+                "quality_score": 0.9,
+                "payload": {
+                    "mrgid": rec.get("MRGID"),
+                    "name": rec.get("preferredGazetteerName", ""),
+                    "place_type": rec.get("placeType", ""),
+                    "status": rec.get("status", ""),
+                },
+            })
+        logger.info("Marine Regions returned %d records", len(observations))
+        return observations

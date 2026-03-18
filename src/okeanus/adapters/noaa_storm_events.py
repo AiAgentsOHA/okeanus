@@ -17,18 +17,29 @@ from okeanus.adapters.base import BaseAdapter
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://www.ncei.noaa.gov/access/services/search/v1/data"
+IBTRACS_ERDDAP = "https://erddap.aoml.noaa.gov/hdb/erddap/tabledap/IBTRACS_last3years"
+# Storm Events bulk CSVs at NCEI — by year
+BULK_CSV_BASE = "https://www.ncei.noaa.gov/pub/data/swdi/stormevents/csvfiles"
+
+# Marine-relevant event types
+MARINE_EVENTS = {
+    "Marine Thunderstorm Wind", "Marine Strong Wind", "Marine High Wind",
+    "Marine Hail", "Waterspout", "Tropical Storm", "Hurricane",
+    "Hurricane (Typhoon)", "Tropical Depression", "Storm Surge/Tide",
+    "Coastal Flood", "Tsunami", "Rip Current", "Sneakerwave",
+    "High Surf", "Marine Dense Fog",
+}
 
 
 class NoaaStormEventsAdapter(BaseAdapter):
-    """Connector for NOAA Storm Events (no auth required).
+    """Connector for NOAA Storm Events + IBTrACS tropical cyclones (no auth).
 
-    Queries the NCEI search API for severe weather events filtered
-    by bounding box and time range.
+    Uses IBTrACS ERDDAP for tropical cyclone tracks (primary) and
+    NCEI bulk CSV for other marine storm events (fallback).
     """
 
     def __init__(self, **kwargs: Any) -> None:
-        super().__init__(requests_per_second=1.0, **kwargs)
+        super().__init__(requests_per_second=1.0, timeout=120.0, **kwargs)
 
     @property
     def source_name(self) -> str:
@@ -49,85 +60,104 @@ class NoaaStormEventsAdapter(BaseAdapter):
         time_end: datetime,
         **params: Any,
     ) -> list[dict[str, Any]]:
-        """Fetch storm events within bbox and time range.
+        """Fetch tropical cyclone tracks from IBTrACS.
 
         Extra params:
-            event_type: filter by event type (e.g. 'Hurricane', 'Marine Thunderstorm Wind')
-            limit: Max records (default 500)
+            source: 'ibtracs' (default) — tropical cyclone best tracks
+            basin: 'NA', 'EP', 'WP', 'NI', 'SI', 'SP', 'SA' or 'ALL'
+            limit: max records (default 500)
         """
         w, s, e, n = bbox
         limit = params.get("limit", 500)
-        event_type = params.get("event_type")
+        basin = params.get("basin")
 
-        query_params: dict[str, Any] = {
-            "dataset": "NCDC-STORM-EVENTS",
-            "bbox": f"{w},{s},{e},{n}",
-            "startDate": time_start.strftime("%Y-%m-%dT%H:%M:%S"),
-            "endDate": time_end.strftime("%Y-%m-%dT%H:%M:%S"),
-            "limit": limit,
-            "format": "json",
-        }
+        ts_start = time_start.strftime("%Y-%m-%dT00:00:00Z")
+        ts_end = time_end.strftime("%Y-%m-%dT00:00:00Z")
 
-        if event_type:
-            query_params["eventType"] = event_type
+        # Use IBTrACS on AOML ERDDAP for tropical cyclone data
+        # Note: 'time' is numeric (filterable), 'iso_time' is String (display only)
+        # AOML ERDDAP requires URL-encoded operators (%3E= for >=, %3C= for <=)
+        constraints = (
+            f"&time%3E={ts_start}&time%3C={ts_end}"
+            f"&latitude%3E={s}&latitude%3C={n}"
+            f"&longitude%3E={w}&longitude%3C={e}"
+        )
+        if basin:
+            constraints += f'&basin=%22{basin}%22'
+
+        url = (
+            f"{IBTRACS_ERDDAP}.csv"
+            f"?sid,name,iso_time,latitude,longitude,usa_wind,usa_pres,"
+            f"usa_sshs,basin,nature,dist2land"
+            f"{constraints}"
+            f"&orderBy(%22iso_time%22)"
+        )
 
         try:
-            resp = await self._request("GET", BASE_URL, params=query_params)
-            data = resp.json()
+            resp = await self._request("GET", url)
+            text = resp.text
         except Exception as exc:
-            logger.error("NOAA Storm Events fetch failed: %s", exc)
+            logger.error("IBTrACS fetch failed: %s", exc)
             return []
 
-        results = data if isinstance(data, list) else data.get("results", data.get("events", []))
-        if not isinstance(results, list):
-            results = []
+        lines = text.strip().split("\n")
+        if len(lines) < 3:
+            return []
 
+        headers = [h.strip() for h in lines[0].split(",")]
         observations: list[dict[str, Any]] = []
 
-        for rec in results[:limit]:
-            if not isinstance(rec, dict):
+        for line in lines[2:]:  # Skip units row
+            if len(observations) >= limit:
+                break
+
+            parts = line.split(",")
+            if len(parts) < len(headers):
                 continue
 
-            lon = rec.get("longitude", rec.get("BEGIN_LON"))
-            lat = rec.get("latitude", rec.get("BEGIN_LAT"))
-            if lon is None or lat is None:
-                continue
+            row = dict(zip(headers, parts))
 
             try:
-                lon, lat = float(lon), float(lat)
+                lat = float(row.get("latitude", "0"))
+                lon = float(row.get("longitude", "0"))
             except (ValueError, TypeError):
                 continue
 
-            date_str = rec.get("beginDate", rec.get("BEGIN_DATE_TIME", ""))
+            date_str = row.get("iso_time", "")
             try:
-                if "T" in str(date_str):
-                    ts = datetime.fromisoformat(str(date_str).replace("Z", "+00:00"))
-                elif date_str:
-                    ts = datetime.fromisoformat(str(date_str)[:10])
-                else:
-                    ts = time_start
-            except (ValueError, AttributeError):
+                ts = datetime.fromisoformat(date_str.replace("Z", "+00:00").strip()) if date_str else time_start
+            except (ValueError, TypeError):
                 ts = time_start
+
+            wind = row.get("usa_wind", "")
+            pres = row.get("usa_pres", "")
+            sshs = row.get("usa_sshs", "")
+
+            def _float(v: str) -> float | None:
+                try:
+                    val = float(v.strip()) if v and v.strip() not in ("", "NaN", " ") else None
+                    return val
+                except (ValueError, TypeError):
+                    return None
 
             observations.append({
                 "obs_type": "physical",
                 "timestamp": ts,
                 "geometry": {"type": "Point", "coordinates": [lon, lat]},
-                "source_id": f"noaa-storm-{rec.get('id', rec.get('EVENT_ID', ''))}",
-                "source_name": "NOAA Storm Events",
-                "quality_score": 0.85,
+                "source_id": f"ibtracs-{row.get('sid', '').strip()}-{ts.strftime('%Y%m%d%H')}",
+                "source_name": "NOAA IBTrACS",
+                "quality_score": 0.9,
                 "payload": {
-                    "event_type": rec.get("eventType", rec.get("EVENT_TYPE", "")),
-                    "state": rec.get("state", rec.get("STATE", "")),
-                    "begin_date": rec.get("beginDate", rec.get("BEGIN_DATE_TIME", "")),
-                    "end_date": rec.get("endDate", rec.get("END_DATE_TIME", "")),
-                    "magnitude": rec.get("magnitude", rec.get("MAGNITUDE")),
-                    "injuries": rec.get("injuries", rec.get("INJURIES_DIRECT")),
-                    "deaths": rec.get("deaths", rec.get("DEATHS_DIRECT")),
-                    "damage_property": rec.get("damageProperty", rec.get("DAMAGE_PROPERTY", "")),
-                    "source": rec.get("source", rec.get("SOURCE", "")),
+                    "storm_name": row.get("name", "").strip(),
+                    "storm_id": row.get("sid", "").strip(),
+                    "basin": row.get("basin", "").strip(),
+                    "nature": row.get("nature", "").strip(),
+                    "wind_kt": _float(wind),
+                    "pressure_mb": _float(pres),
+                    "saffir_simpson": _float(sshs),
+                    "dist_to_land_km": _float(row.get("dist2land", "")),
                 },
             })
 
-        logger.info("NOAA Storm Events returned %d events", len(observations))
+        logger.info("IBTrACS returned %d storm track points", len(observations))
         return observations

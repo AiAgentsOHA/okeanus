@@ -17,8 +17,7 @@ from okeanus.adapters.base import BaseAdapter
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://data.isa.org.jm/isa/rest/services"
-GEOSERVER_URL = "https://gis.isa.org.jm/geoserver/isa/ows"
+ARCGIS_URL = "https://data.isa.org.jm/isa/map/arcgis/rest/services/ISAMapService/MapServer"
 
 
 class IsaDeepDataAdapter(BaseAdapter):
@@ -63,33 +62,36 @@ class IsaDeepDataAdapter(BaseAdapter):
 
         w, s, e, n = bbox
 
-        # Try GeoServer WFS endpoint
-        type_name = f"isa:{layer}"
+        # ArcGIS MapServer layers (confirmed from live service):
+        #   0: V_FCLSTATIONP_CTD   — CTD station points
+        #   1: V_FCLSTATIONP       — sampling stations (environmental data)
+        #   2: fclSampleP          — sample points
+        #   4: fclContractAreasBlocks — contract area polygons
+        #   5: fclContractAreasCells  — contract area cells
+        layer_id = {"contracts": 4, "stations": 1, "environmental": 0, "samples": 2}.get(layer, 1)
+        url = f"{ARCGIS_URL}/{layer_id}/query"
+
         query: dict[str, Any] = {
-            "service": "WFS",
-            "version": "2.0.0",
-            "request": "GetFeature",
-            "typeName": type_name,
-            "outputFormat": "application/json",
-            "count": limit,
-            "srsName": "EPSG:4326",
+            "where": "1=1",
+            "outFields": "*",
+            "returnGeometry": "true",
+            "f": "geojson",
+            "resultRecordCount": limit,
         }
 
-        if w != 0 or s != 0 or e != 0 or n != 0:
-            query["BBOX"] = f"{s},{w},{n},{e},EPSG:4326"
-
-        cql_filters = []
-        if mineral:
-            cql_filters.append(f"mineral_type='{mineral}'")
-        if cql_filters:
-            query["CQL_FILTER"] = " AND ".join(cql_filters)
+        if not (w <= -179 and s <= -89 and e >= 179 and n >= 89):
+            query["geometry"] = f"{w},{s},{e},{n}"
+            query["geometryType"] = "esriGeometryEnvelope"
+            query["inSR"] = "4326"
+            query["outSR"] = "4326"
+            query["spatialRel"] = "esriSpatialRelIntersects"
 
         try:
-            resp = await self._request("GET", GEOSERVER_URL, params=query)
+            resp = await self._request("GET", url, params=query)
             data = resp.json()
         except Exception as exc:
-            logger.warning("ISA GeoServer failed: %s, trying ArcGIS", exc)
-            return await self._fetch_arcgis(bbox, layer, limit)
+            logger.error("ISA DeepData ArcGIS fetch failed: %s — ISA data portal may be unavailable", exc)
+            return []
 
         features = data.get("features", [])
         observations: list[dict[str, Any]] = []
@@ -111,12 +113,20 @@ class IsaDeepDataAdapter(BaseAdapter):
                 except (IndexError, TypeError, ZeroDivisionError):
                     coords = [-140, -10]
 
+            # ActivityDate is epoch-ms in contract layers; stations lack dates
+            activity_ms = props.get("ActivityDate")
             contract_date = props.get("contract_date") or props.get("date_signed") or ""
             try:
-                ts = datetime.strptime(contract_date[:10], "%Y-%m-%d") if contract_date else datetime.now()
-            except (ValueError, TypeError):
+                if activity_ms and isinstance(activity_ms, (int, float)):
+                    ts = datetime.utcfromtimestamp(activity_ms / 1000)
+                elif contract_date:
+                    ts = datetime.strptime(contract_date[:10], "%Y-%m-%d")
+                else:
+                    ts = datetime.now()
+            except (ValueError, TypeError, OSError):
                 ts = datetime.now()
 
+            obj_id = props.get("OBJECTID") or props.get("contract_id") or props.get("id", len(observations))
             observations.append({
                 "obs_type": "economic",
                 "timestamp": ts,
@@ -124,70 +134,24 @@ class IsaDeepDataAdapter(BaseAdapter):
                     "type": "Point",
                     "coordinates": coords if isinstance(coords, list) and len(coords) >= 2 else [-140, -10],
                 },
-                "source_id": f"isa-{layer}-{props.get('contract_id') or props.get('id', len(observations))}",
+                "source_id": f"isa-{layer}-{obj_id}",
                 "source_name": "ISA DeepData",
                 "quality_score": 0.93,
                 "payload": {
                     "layer": layer,
-                    "contractor": props.get("contractor") or props.get("Contractor", ""),
-                    "sponsoring_state": props.get("sponsoring_state") or props.get("State", ""),
-                    "mineral_type": props.get("mineral_type") or props.get("Mineral", ""),
-                    "area_name": props.get("area_name") or props.get("Area", ""),
-                    "area_km2": props.get("area_km2") or props.get("Area_sqkm"),
-                    "contract_date": contract_date,
-                    "expiry_date": props.get("expiry_date") or props.get("Expiry", ""),
-                    "status": props.get("status") or props.get("Status", ""),
-                    "ocean_region": props.get("ocean_region") or props.get("Region", ""),
+                    "contractor": props.get("Contractor") or props.get("contractor", ""),
+                    "contractor_id": props.get("ContractorID", ""),
+                    "sponsoring_state": props.get("SponsoringState") or props.get("sponsoring_state", ""),
+                    "contract_type": props.get("ContractType", ""),
+                    "contract_status": props.get("ContractStatus") or props.get("Status", ""),
+                    "area_key": props.get("AreaKey", ""),
+                    "area_sector": props.get("AreaSector") or props.get("ocean_region", ""),
+                    "area_km2": props.get("AreaKM2") or props.get("area_km2"),
+                    "station_id": props.get("StationID", ""),
+                    "status": props.get("Status") or props.get("ContractStatus", ""),
                 },
             })
 
         logger.info("ISA DeepData %s returned %d features", layer, len(observations))
         return observations
 
-    async def _fetch_arcgis(
-        self,
-        bbox: tuple[float, float, float, float],
-        layer: str,
-        limit: int,
-    ) -> list[dict[str, Any]]:
-        """Fallback: try ISA ArcGIS REST endpoint."""
-        url = f"{BASE_URL}/ISA_Areas/MapServer/0/query"
-        w, s, e, n = bbox
-
-        query: dict[str, Any] = {
-            "where": "1=1",
-            "geometry": f"{w},{s},{e},{n}",
-            "geometryType": "esriGeometryEnvelope",
-            "inSR": "4326",
-            "outSR": "4326",
-            "outFields": "*",
-            "returnGeometry": "true",
-            "f": "geojson",
-            "resultRecordCount": limit,
-        }
-
-        try:
-            resp = await self._request("GET", url, params=query)
-            data = resp.json()
-        except Exception as exc:
-            logger.error("ISA ArcGIS fallback failed: %s", exc)
-            return []
-
-        features = data.get("features", [])
-        observations: list[dict[str, Any]] = []
-
-        for feat in features:
-            if not isinstance(feat, dict):
-                continue
-            props = feat.get("properties", {})
-            observations.append({
-                "obs_type": "economic",
-                "timestamp": datetime.now(),
-                "geometry": feat.get("geometry", {"type": "Point", "coordinates": [-140, -10]}),
-                "source_id": f"isa-arcgis-{len(observations)}",
-                "source_name": "ISA DeepData",
-                "quality_score": 0.85,
-                "payload": {"layer": layer, **props},
-            })
-
-        return observations

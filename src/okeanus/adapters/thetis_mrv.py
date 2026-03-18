@@ -2,7 +2,38 @@
 
 EU MRV (Monitoring, Reporting, Verification) regulation data for ship
 CO2 emissions from EMSA's THETIS-MRV system. Covers all ships >5000 GT
-calling at EU/EEA ports. No auth required for public aggregate data.
+calling at EU/EEA ports.
+
+WAF STATUS (verified 2026-03-18, re-verified same session):
+  The EMSA API at mrv.emsa.europa.eu is behind an F5 BIG-IP WAF.
+  All programmatic requests are rejected:
+    - GET with ANY sortColumn value -> 400 "Please insert pagination sort column"
+      (WAF rejection, not a real parameter error — tested shipName, ship_name,
+      SHIP_NAME, imoNumber, imo_number, IMO_NUMBER, totalCo2Emissions)
+    - POST /search variant -> 404
+    - /csv and /export endpoints -> 404
+    - Playwright headless -> same 400 from WAF
+    - Scrapling StealthyFetcher -> untested (JS-rendered SPA)
+
+  The 400 response includes F5 WAF cookies (P_THETIS_MRV, TS013a928b)
+  confirming the WAF intercept.
+
+  Alternative sources investigated (all dead ends):
+    - EU Open Data Portal (data.europa.eu/data/datasets/co2-emissions-data):
+      only links back to mrv.emsa.europa.eu, no direct download
+    - portal.emsa.europa.eu REST endpoints: all 404
+    - EEA Datahub: has EU ETS data viewer but no ship-level MRV download
+    - climate.ec.europa.eu: policy docs only, no raw data files
+
+  Data IS publicly available via browser at:
+    https://mrv.emsa.europa.eu/#/public/emission-report
+  The browser can download CSV/XLSX from the search results page,
+  but these downloads require solving a reCAPTCHA challenge.
+
+  Data covers reporting years 2018-2023 (as of 2026).
+
+  STATUS: BLOCKED — no programmatic access path exists. Monitor for EMSA
+  API changes or consider manual CSV upload workflow.
 
 Data source: https://mrv.emsa.europa.eu/
 """
@@ -21,13 +52,19 @@ BASE_URL = "https://mrv.emsa.europa.eu/api/public-emission-report"
 
 
 class ThetisMrvAdapter(BaseAdapter):
-    """Connector for THETIS-MRV ship emissions data (no auth required).
+    """Connector for THETIS-MRV ship emissions data.
 
     Returns aggregated ship emission reports by year.
+
+    WARNING: API is WAF-protected (F5 BIG-IP + reCAPTCHA). All
+    programmatic requests are rejected with a 400 error. This adapter
+    makes a single attempt per call to detect if EMSA restores access,
+    but will return empty under current conditions.
     """
 
     def __init__(self, **kwargs: Any) -> None:
-        super().__init__(requests_per_second=1.0, **kwargs)
+        # Only 1 retry -- WAF rejection is deterministic, retries waste time
+        super().__init__(requests_per_second=1.0, max_retries=1, **kwargs)
 
     @property
     def source_name(self) -> str:
@@ -54,21 +91,47 @@ class ThetisMrvAdapter(BaseAdapter):
             year: reporting year (default: time_end.year - 1)
             ship_type: filter by ship type
             limit: Max records (default 200)
+
+        NOTE: Currently returns empty due to F5 WAF protection.
+        The API is probed once to detect if EMSA has restored access.
+        Data is available via browser at:
+        https://mrv.emsa.europa.eu/#/public/emission-report
         """
         year = params.get("year", time_end.year - 1)
         ship_type = params.get("ship_type")
         limit = params.get("limit", 200)
 
-        query_params: dict[str, Any] = {"year": year}
+        # Single probe attempt -- WAF rejection is deterministic so
+        # cycling through multiple years just wastes time and generates
+        # noisy retry logs.
+        query_params: dict[str, Any] = {
+            "year": year,
+            "sortColumn": "shipName",
+            "sortDirection": "ASC",
+            "page": 0,
+            "size": min(limit, 50),
+        }
         if ship_type:
             query_params["shipType"] = ship_type
 
+        data = None
         try:
             resp = await self._request("GET", BASE_URL, params=query_params)
-            data = resp.json()
-        except Exception as exc:
-            logger.error("Thetis MRV fetch failed: %s", exc)
+            if resp.status_code < 400:
+                data = resp.json()
+        except Exception:
+            pass
+
+        if data is None:
+            logger.warning(
+                "Thetis MRV API is WAF-protected (F5 BIG-IP + reCAPTCHA). "
+                "Programmatic access is blocked. Data available via browser: "
+                "https://mrv.emsa.europa.eu/#/public/emission-report"
+            )
             return []
+
+        # If we get here, EMSA has restored API access
+        logger.info("Thetis MRV API access restored -- processing results")
 
         results = data if isinstance(data, list) else data.get("data", data.get("results", []))
         if not isinstance(results, list):

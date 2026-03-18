@@ -17,7 +17,7 @@ from okeanus.adapters.base import BaseAdapter
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://ec.europa.eu/eurostat/api/dissemination/sdmx/2.1"
+BASE_URL = "https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data"
 
 # Key dataset codes for blue economy
 BLUE_DATASETS = {
@@ -77,20 +77,25 @@ class EurostatBlueAdapter(BaseAdapter):
         year_start = time_start.year
         year_end = time_end.year
 
-        # Build SDMX REST query
-        # Filter key: freq.geo.species.fishreg...
+        # JSON-stat statistics API (v1.0)
+        # Eurostat data lags 1-2 years; widen range to find published data
+        if year_end - year_start < 3:
+            year_start = year_end - 5
         geo_filter = country.upper() if country else ""
-        time_filter = f"startPeriod={year_start}&endPeriod={year_end}"
 
-        url = f"{BASE_URL}/data/{dataset}"
+        url = f"{BASE_URL}/{dataset}"
         query: dict[str, Any] = {
             "format": "JSON",
-            "startPeriod": str(year_start),
-            "endPeriod": str(year_end),
             "lang": "en",
+            "sinceTimePeriod": str(year_start),
+            "untilTimePeriod": str(year_end),
         }
         if geo_filter:
             query["geo"] = geo_filter
+        else:
+            # Without a geo filter the response can be huge (413).
+            # Default to Germany to keep response small.
+            query["geo"] = "DE"
 
         try:
             resp = await self._request("GET", url, params=query)
@@ -104,72 +109,91 @@ class EurostatBlueAdapter(BaseAdapter):
         center_lon = (w + e) / 2
         center_lat = (s + n) / 2
 
-        # SDMX JSON response structure
-        dimension = data.get("dimension", {})
+        # JSON-stat 2.0 response: top-level has "dimension", "value", "id", "size"
         values_data = data.get("value", {})
-        sizes = data.get("size", [])
-
-        # Extract geo and time dimensions
-        geo_dim = dimension.get("geo", {}).get("category", {})
-        geo_labels = geo_dim.get("label", {})
-        time_dim = dimension.get("time", {}).get("category", {})
-        time_labels = time_dim.get("label", {})
-
         if not values_data:
-            # Fallback: try dataset/value structure
-            ds = data.get("dataSets", [{}])
-            if ds:
-                series = ds[0].get("series", {}) if ds else {}
-                for key, val in series.items():
-                    for obs_key, obs_val in val.get("observations", {}).items():
-                        if not obs_val:
-                            continue
-                        observations.append({
-                            "obs_type": "economic",
-                            "timestamp": datetime(year_start, 1, 1),
-                            "geometry": {"type": "Point", "coordinates": [center_lon, center_lat]},
-                            "source_id": f"eurostat-{dataset}-{key}-{obs_key}",
-                            "source_name": "Eurostat",
-                            "quality_score": 0.95,
-                            "payload": {
-                                "dataset": dataset,
-                                "dataset_name": BLUE_DATASETS.get(dataset, dataset),
-                                "series_key": key,
-                                "value": obs_val[0] if isinstance(obs_val, list) else obs_val,
-                            },
-                        })
-        else:
-            # JSON-stat style
-            idx = 0
-            for geo_code, geo_label in geo_labels.items():
-                for time_code, time_label in time_labels.items():
-                    str_idx = str(idx)
-                    idx += 1
-                    if str_idx not in values_data:
-                        continue
+            logger.warning("Eurostat %s: no values in response", dataset)
+            return []
 
-                    try:
-                        yr = int(time_code[:4])
-                        ts = datetime(yr, 1, 1)
-                    except (ValueError, TypeError):
-                        continue
+        dimension = data.get("dimension", {})
+        dim_ids = data.get("id", [])  # ordered list of dimension names
+        sizes = data.get("size", [])  # sizes of each dimension
 
-                    observations.append({
-                        "obs_type": "economic",
-                        "timestamp": ts,
-                        "geometry": {"type": "Point", "coordinates": [center_lon, center_lat]},
-                        "source_id": f"eurostat-{dataset}-{geo_code}-{time_code}",
-                        "source_name": "Eurostat",
-                        "quality_score": 0.95,
-                        "payload": {
-                            "dataset": dataset,
-                            "dataset_name": BLUE_DATASETS.get(dataset, dataset),
-                            "country_code": geo_code,
-                            "country_name": geo_label,
-                            "period": time_code,
-                            "value": values_data[str_idx],
-                        },
-                    })
+        # Build ordered list of dimension categories
+        dim_categories: list[list[str]] = []
+        dim_labels_map: dict[str, dict[str, str]] = {}
+        for dim_name in dim_ids:
+            dim_info = dimension.get(dim_name, {})
+            cat = dim_info.get("category", {})
+            index = cat.get("index", {})
+            labels = cat.get("label", {})
+            dim_labels_map[dim_name] = labels
+            # index can be dict {code: position} or list [code, ...]
+            if isinstance(index, dict):
+                sorted_codes = sorted(index.keys(), key=lambda k: index[k])
+            elif isinstance(index, list):
+                sorted_codes = index
+            else:
+                sorted_codes = list(labels.keys())
+            dim_categories.append(sorted_codes)
+
+        # Find positions of geo and time dimensions
+        geo_pos = None
+        time_pos = None
+        for i, dim_name in enumerate(dim_ids):
+            if dim_name == "geo":
+                geo_pos = i
+            elif dim_name == "time":
+                time_pos = i
+
+        # Iterate through flat value index and decode dimensions
+        for str_idx, value in values_data.items():
+            idx = int(str_idx)
+            # Decode flat index to dimension positions
+            coords: list[int] = []
+            remaining = idx
+            for s in reversed(sizes):
+                coords.append(remaining % s)
+                remaining //= s
+            coords.reverse()
+
+            geo_code = ""
+            geo_label = ""
+            time_code = ""
+            if geo_pos is not None and geo_pos < len(coords):
+                pos = coords[geo_pos]
+                cats = dim_categories[geo_pos]
+                if pos < len(cats):
+                    geo_code = cats[pos]
+                    geo_label = dim_labels_map.get("geo", {}).get(geo_code, geo_code)
+            if time_pos is not None and time_pos < len(coords):
+                pos = coords[time_pos]
+                cats = dim_categories[time_pos]
+                if pos < len(cats):
+                    time_code = cats[pos]
+
+            try:
+                yr = int(time_code[:4])
+                ts = datetime(yr, 1, 1)
+            except (ValueError, TypeError):
+                ts = datetime(year_start, 1, 1)
+
+            observations.append({
+                "obs_type": "economic",
+                "timestamp": ts,
+                "geometry": {"type": "Point", "coordinates": [center_lon, center_lat]},
+                "source_id": f"eurostat-{dataset}-{geo_code}-{time_code}",
+                "source_name": "Eurostat",
+                "quality_score": 0.95,
+                "payload": {
+                    "dataset": dataset,
+                    "dataset_name": BLUE_DATASETS.get(dataset, dataset),
+                    "country_code": geo_code,
+                    "country_name": geo_label,
+                    "period": time_code,
+                    "value": value,
+                },
+            })
 
         observations = observations[:limit]
         logger.info("Eurostat %s returned %d observations", dataset, len(observations))

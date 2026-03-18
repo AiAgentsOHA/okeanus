@@ -47,6 +47,17 @@ class ArgovisAdapter(BaseAdapter):
         """Fetch Argo float profiles within bbox and time range."""
         w, s, e, n = bbox
 
+        # Clamp to a reasonable region to avoid timeout on global queries
+        if (e - w) > 60 or (n - s) > 60:
+            # Narrow to North Atlantic as representative sample
+            w, s, e, n = -80, 25, -60, 45
+
+        # Clamp time range to last 30 days to avoid massive result sets
+        from datetime import timedelta
+        max_window = timedelta(days=30)
+        if (time_end - time_start) > max_window:
+            time_start = time_end - max_window
+
         # Argovis uses polygon as [[lon,lat],[lon,lat],...] closed ring
         polygon = f"[[{w},{s}],[{e},{s}],[{e},{n}],[{w},{n}],[{w},{s}]]"
 

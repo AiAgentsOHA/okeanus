@@ -17,8 +17,16 @@ from okeanus.adapters.base import BaseAdapter
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://unctadstat.unctad.org/api/v1"
+# Old UNCTAD API is dead. Use World Bank API for LSCI (same underlying data).
+# UNdata SDMX fallback for other maritime indicators.
+WB_API_URL = "https://api.worldbank.org/v2/country/all/indicator"
 FALLBACK_URL = "https://data.un.org/ws/rest/data"
+
+# World Bank indicator codes for UNCTAD maritime data
+WB_INDICATOR_MAP = {
+    "US.LSCI": "IS.SHP.GCNW.XQ",  # Liner Shipping Connectivity Index
+    "US.PortContThroughput": "IS.SHP.GOOD.TU",  # Container port traffic (TEU)
+}
 
 # Key UNCTAD dataset/indicator codes
 INDICATORS = {
@@ -73,6 +81,9 @@ class UnctadAdapter(BaseAdapter):
         limit = params.get("limit", 500)
         year_start = time_start.year
         year_end = time_end.year
+        # UNCTAD/World Bank data has publication lag; widen range
+        if year_end - year_start < 3:
+            year_start = year_end - 5
 
         # Try the UNCTAD API first, fallback to UNdata
         observations = await self._fetch_unctad_api(
@@ -95,15 +106,19 @@ class UnctadAdapter(BaseAdapter):
         year_end: int,
         limit: int,
     ) -> list[dict[str, Any]]:
-        """Try UNCTAD's own REST endpoint."""
-        url = f"{BASE_URL}/data/{indicator}"
+        """Fetch UNCTAD data via World Bank API (mirrors UNCTAD LSCI etc)."""
+        wb_code = WB_INDICATOR_MAP.get(indicator)
+        if not wb_code:
+            return []
+
+        url = f"{WB_API_URL}/{wb_code}"
         query: dict[str, Any] = {
-            "startPeriod": str(year_start),
-            "endPeriod": str(year_end),
             "format": "json",
+            "per_page": min(limit, 1000),
+            "date": f"{year_start}:{year_end}",
         }
         if country:
-            query["reporter"] = country
+            url = f"https://api.worldbank.org/v2/country/{country}/indicator/{wb_code}"
 
         try:
             resp = await self._request("GET", url, params=query)
@@ -111,8 +126,10 @@ class UnctadAdapter(BaseAdapter):
         except Exception:
             return []
 
-        records = data if isinstance(data, list) else data.get("data", data.get("value", []))
-        if not isinstance(records, list):
+        # World Bank returns [metadata, records] array
+        if isinstance(data, list) and len(data) >= 2:
+            records = data[1] or []
+        else:
             return []
 
         observations: list[dict[str, Any]] = []
@@ -120,27 +137,25 @@ class UnctadAdapter(BaseAdapter):
             if not isinstance(rec, dict):
                 continue
 
-            year = rec.get("Year") or rec.get("TimePeriod") or rec.get("year")
-            value = rec.get("Value") or rec.get("value") or rec.get("OBS_VALUE")
-
+            value = rec.get("value")
             if value is None:
                 continue
 
             try:
-                yr = int(year)
+                yr = int(rec.get("date", 0))
                 ts = datetime(yr, 1, 1)
                 val = float(value)
             except (ValueError, TypeError):
                 continue
 
-            ctry = rec.get("Economy") or rec.get("REF_AREA") or rec.get("reporter", "")
+            ctry = rec.get("countryiso3code", rec.get("country", {}).get("id", ""))
 
             observations.append({
                 "obs_type": "economic",
                 "timestamp": ts,
                 "geometry": {"type": "Point", "coordinates": [0, 0]},
                 "source_id": f"unctad-{indicator}-{ctry}-{yr}",
-                "source_name": "UNCTAD",
+                "source_name": "UNCTAD via World Bank",
                 "quality_score": 0.90,
                 "payload": {
                     "indicator": indicator,
@@ -148,7 +163,7 @@ class UnctadAdapter(BaseAdapter):
                     "country": ctry,
                     "year": yr,
                     "value": val,
-                    "unit": rec.get("Unit") or rec.get("UNIT_MEASURE", ""),
+                    "unit": rec.get("unit", ""),
                 },
             })
 

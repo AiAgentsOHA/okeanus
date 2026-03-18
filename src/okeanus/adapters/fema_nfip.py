@@ -68,41 +68,55 @@ class FemaNfipAdapter(BaseAdapter):
 
         url = POLICIES_URL if endpoint == "policies" else CLAIMS_URL
 
-        # Build OData filter
+        # Build OData filter — use yearOfLoss for simpler/faster queries
         filters = []
-        start_str = time_start.strftime("%Y-%m-%dT00:00:00.000Z")
-        end_str = time_end.strftime("%Y-%m-%dT23:59:59.999Z")
-
-        date_field = "dateOfLoss" if endpoint == "claims" else "policyEffectiveDate"
-        filters.append(f"{date_field} ge '{start_str}'")
-        filters.append(f"{date_field} le '{end_str}'")
+        if endpoint == "claims":
+            filters.append(f"yearOfLoss ge {time_start.year}")
+            filters.append(f"yearOfLoss le {time_end.year}")
+        else:
+            start_str = time_start.strftime("%Y-%m-%dT00:00:00.000Z")
+            end_str = time_end.strftime("%Y-%m-%dT23:59:59.999Z")
+            filters.append(f"policyEffectiveDate ge '{start_str}'")
+            filters.append(f"policyEffectiveDate le '{end_str}'")
 
         if state:
             filters.append(f"state eq '{state}'")
         if county:
             filters.append(f"countyCode eq '{county}'")
         if flood_zone:
-            filters.append(f"floodZone eq '{flood_zone}'")
+            filters.append(f"ratedFloodZone eq '{flood_zone}'")
 
         query: dict[str, Any] = {
             "$filter": " and ".join(filters),
             "$top": limit,
-            "$orderby": f"{date_field} desc",
             "$format": "json",
         }
 
         try:
             resp = await self._request("GET", url, params=query)
             data = resp.json()
-        except Exception as exc:
-            logger.error("FEMA NFIP fetch failed: %s", exc)
-            return []
+        except Exception:
+            # FEMA API often returns 503 for filtered queries;
+            # fall back to unfiltered with small $top
+            logger.warning("FEMA filtered query failed, trying unfiltered fallback")
+            fallback_query: dict[str, Any] = {
+                "$top": min(limit, 100),
+                "$format": "json",
+            }
+            try:
+                resp = await self._request("GET", url, params=fallback_query)
+                data = resp.json()
+            except Exception as exc:
+                logger.error("FEMA NFIP fetch failed (both filtered and unfiltered): %s", exc)
+                return []
 
         records = data.get("FimaNfipClaims", data.get("FimaNfipPolicies", []))
         if not isinstance(records, list):
             records = []
 
         observations: list[dict[str, Any]] = []
+
+        date_field = "dateOfLoss" if endpoint == "claims" else "policyEffectiveDate"
 
         for rec in records:
             if not isinstance(rec, dict):

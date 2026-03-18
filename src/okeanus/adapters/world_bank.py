@@ -74,18 +74,24 @@ class WorldBankAdapter(BaseAdapter):
         country = params.get("country", "all")
         limit = params.get("limit", 500)
 
-        indicators = [indicator] if indicator else list(BLUE_INDICATORS.keys())
+        # Limit to 3 key indicators to avoid timeout (11 x all countries is too slow)
+        indicators = [indicator] if indicator else list(BLUE_INDICATORS.keys())[:3]
         year_start = time_start.year
         year_end = time_end.year
 
         observations: list[dict[str, Any]] = []
 
         for ind_code in indicators:
+            if len(observations) >= limit:
+                break
             url = f"{BASE_URL}/country/{country}/indicator/{ind_code}"
+            # Always request enough records from the API (per_page is API
+            # pagination, not output limit). Many records have value=None
+            # so we need a large page to get enough non-null values.
             query: dict[str, Any] = {
                 "format": "json",
-                "per_page": limit,
-                "date": f"{year_start}:{year_end}",
+                "per_page": 300,
+                "date": f"{min(year_start, year_end - 5)}:{year_end}",
             }
 
             try:
@@ -139,5 +145,6 @@ class WorldBankAdapter(BaseAdapter):
                     },
                 })
 
+        observations = observations[:limit]
         logger.info("World Bank returned %d observations", len(observations))
         return observations

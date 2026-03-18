@@ -67,19 +67,18 @@ class SsbSalmonAdapter(BaseAdapter):
 
         # SSB uses POST with JSON-stat query
         url = f"{BASE_URL}/{table}"
+        limit = params.get("limit", 500)
 
-        # Build query body
-        year_start = time_start.year
-        year_end = time_end.year
-        years = [str(y) for y in range(year_start, year_end + 1)]
-
+        # Table 03024 uses weekly periods (YYYYUNN format, e.g. "2026U06"),
+        # not plain years.  Use "top" filter to fetch the latest N periods
+        # and then filter by time_start/time_end client-side.
         body: dict[str, Any] = {
             "query": [
                 {
                     "code": "Tid",
                     "selection": {
-                        "filter": "item",
-                        "values": years,
+                        "filter": "top",
+                        "values": ["260"],  # ~5 years of weeks
                     },
                 },
             ],
@@ -145,10 +144,12 @@ class SsbSalmonAdapter(BaseAdapter):
 
             # Parse time period
             try:
-                if "W" in time_key or "w" in time_key:
-                    # Weekly: 2024W01
-                    yr = int(time_key[:4])
-                    wk = int(time_key[-2:])
+                if "U" in time_key or "W" in time_key or "w" in time_key:
+                    # Weekly: 2024U06 or 2024W06
+                    sep = "U" if "U" in time_key else ("W" if "W" in time_key else "w")
+                    parts = time_key.split(sep)
+                    yr = int(parts[0])
+                    wk = int(parts[1])
                     ts = datetime(yr, 1, 1) + __import__("datetime").timedelta(weeks=wk - 1)
                 elif len(time_key) == 4:
                     ts = datetime(int(time_key), 1, 1)
@@ -160,7 +161,11 @@ class SsbSalmonAdapter(BaseAdapter):
             except (ValueError, TypeError):
                 continue
 
-            if ts < time_start or ts > time_end:
+            # Strip tzinfo for comparison if needed
+            ts_compare = ts
+            t_start = time_start.replace(tzinfo=None) if time_start.tzinfo else time_start
+            t_end = time_end.replace(tzinfo=None) if time_end.tzinfo else time_end
+            if ts_compare < t_start or ts_compare > t_end:
                 continue
 
             # Build context from other dimensions

@@ -1,10 +1,9 @@
 """PSMSL (Permanent Service for Mean Sea Level) adapter.
 
 2,300+ tide gauge stations with monthly mean sea level records since 1807.
-Longest continuous global sea level dataset. No auth required.
+Uses flat file downloads (no JSON API). No auth required.
 
 Data portal: https://psmsl.org/data/obtaining/
-API docs: https://psmsl.org/data/obtaining/psmsl.helpjsondata.php
 """
 
 from __future__ import annotations
@@ -17,7 +16,8 @@ from okeanus.adapters.base import BaseAdapter
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://psmsl.org/api"
+FILELIST_URL = "https://psmsl.org/data/obtaining/rlr.monthly.data/filelist.txt"
+DATA_URL = "https://psmsl.org/data/obtaining/rlr.monthly.data"
 
 
 class PsmslAdapter(BaseAdapter):
@@ -45,101 +45,90 @@ class PsmslAdapter(BaseAdapter):
         time_end: datetime,
         **params: Any,
     ) -> list[dict[str, Any]]:
-        """Fetch tide gauge stations and their mean sea level data.
-
-        First retrieves station list, filters by bbox, then fetches
-        monthly mean sea level for matching stations.
-
-        Extra params:
-            station_id: Specific PSMSL station ID
-        """
         w, s, e, n = bbox
-        limit = params.get("limit", 100)
+        limit = params.get("limit", 20)
 
-        # Fetch station metadata
+        # Fetch station list (semicolon-delimited)
         try:
-            resp = await self._request("GET", f"{BASE_URL}/stations")
-            stations = resp.json()
+            resp = await self._request("GET", FILELIST_URL)
+            text = resp.text
         except Exception as exc:
             logger.error("PSMSL station fetch failed: %s", exc)
             return []
 
-        if not isinstance(stations, list):
-            stations = stations.get("stations", [])
-
-        # Filter stations by bbox
-        matching: list[dict[str, Any]] = []
-        for st in stations:
-            lat = st.get("lat")
-            lon = st.get("lon")
-            if lat is None or lon is None:
+        # Parse: id;lat;lon;name;coastline;station_code;qc_flag
+        matching = []
+        for line in text.strip().split("\n"):
+            parts = line.split(";")
+            if len(parts) < 4:
                 continue
-            if w <= float(lon) <= e and s <= float(lat) <= n:
-                matching.append(st)
+            try:
+                sid = parts[0].strip()
+                lat = float(parts[1].strip())
+                lon = float(parts[2].strip())
+                name = parts[3].strip()
+            except (ValueError, IndexError):
+                continue
+            if w <= lon <= e and s <= lat <= n:
+                matching.append({"id": sid, "lat": lat, "lon": lon, "name": name,
+                                 "coastline": parts[4].strip() if len(parts) > 4 else "",
+                                 "qc": parts[6].strip() if len(parts) > 6 else ""})
             if len(matching) >= limit:
                 break
 
         observations: list[dict[str, Any]] = []
-
-        for st in matching:
-            station_id = st.get("id")
-            lat = float(st["lat"])
-            lon = float(st["lon"])
-
-            # Fetch monthly RLR data for this station
+        # Fetch data for a few stations
+        for st in matching[:min(limit, 10)]:
             try:
-                resp = await self._request(
-                    "GET", f"{BASE_URL}/stations/{station_id}/rlr/monthly",
-                )
-                monthly_data = resp.json()
+                resp = await self._request("GET", f"{DATA_URL}/{st['id']}.rlrdata")
+                lines = resp.text.strip().split("\n")
             except Exception:
-                # Fall back to station metadata only
-                monthly_data = []
+                lines = []
 
-            if not isinstance(monthly_data, list):
-                monthly_data = monthly_data.get("data", [])
-
-            # Filter by time range and get most recent record
             recent = None
-            for rec in monthly_data:
-                year = rec.get("year")
-                month = rec.get("month", 1)
-                if year is None:
+            latest_any = None
+            for line in lines:
+                parts = line.split(";") if ";" in line else line.split()
+                if len(parts) < 2:
                     continue
                 try:
-                    ts = datetime(int(year), int(month), 1)
+                    dec_year = float(parts[0].strip())
+                    value = float(parts[1].strip())
+                    if value < -90000:  # Missing data flag
+                        continue
+                    yr = int(dec_year)
+                    mo = max(1, min(12, round((dec_year - yr) * 12) + 1))
+                    ts = datetime(yr, mo, 1)
                 except (ValueError, TypeError):
                     continue
-                if time_start <= ts <= time_end:
+                # Track latest record regardless of time filter
+                if latest_any is None or ts > latest_any["ts"]:
+                    latest_any = {"ts": ts, "value": value}
+                # Also track within requested time range
+                t_start = time_start.replace(tzinfo=None) if time_start.tzinfo else time_start
+                t_end = time_end.replace(tzinfo=None) if time_end.tzinfo else time_end
+                if t_start <= ts <= t_end:
                     if recent is None or ts > recent["ts"]:
-                        recent = {"ts": ts, "rec": rec}
+                        recent = {"ts": ts, "value": value}
 
-            if recent:
-                ts = recent["ts"]
-                rec = recent["rec"]
-                msl = rec.get("rlr", rec.get("value"))
-            else:
-                ts = datetime.now()
-                msl = None
+            # Prefer time-filtered, fall back to latest available
+            best = recent or latest_any
+            ts = best["ts"] if best else time_start
+            msl = best["value"] if best else None
 
             observations.append({
                 "obs_type": "physical",
                 "timestamp": ts,
-                "geometry": {"type": "Point", "coordinates": [lon, lat]},
-                "source_id": f"psmsl-{station_id}",
+                "geometry": {"type": "Point", "coordinates": [st["lon"], st["lat"]]},
+                "source_id": f"psmsl-{st['id']}",
                 "source_name": "PSMSL",
                 "quality_score": 0.95,
                 "payload": {
-                    "station_id": station_id,
-                    "station_name": st.get("name", ""),
-                    "country": st.get("country", ""),
-                    "coastline_code": st.get("coastlineCode"),
-                    "station_code": st.get("stationCode"),
+                    "station_id": st["id"],
+                    "station_name": st["name"],
+                    "coastline_code": st.get("coastline", ""),
                     "mean_sea_level_mm": msl,
-                    "quality_flag": st.get("qualityFlag", ""),
-                    "gloss_id": st.get("glossId"),
-                    "start_year": st.get("dateStart"),
-                    "end_year": st.get("dateEnd"),
+                    "quality_flag": st.get("qc", ""),
                 },
             })
 

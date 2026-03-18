@@ -175,22 +175,47 @@ def _eumofa(records: list[dict]) -> TransformResult:
 
 @register_mapper("USDA GATS")
 def _usda_gats(records: list[dict]) -> TransformResult:
-    ts, flows = [], []
+    ts, flows, entities = [], [], []
     for rec in records:
         p = rec.get("payload", {})
         if p.get("value_usd") is None:
             continue
         b = _base(rec)
+
+        # Create source entity (US)
+        us_id = entity_uuid("USDA GATS", "country-US")
+        us_ent = dict(b)
+        us_ent.update(id=us_id, entity_type="country", name="United States",
+                      source_id=str(us_id), identifier="US", country="US",
+                      sector="trade", status=None, payload=None)
+        entities.append(us_ent)
+
+        # Create partner entity
+        partner = p.get("partner_name", "unknown")
+        partner_id = entity_uuid("USDA GATS", f"country-{partner}")
+        partner_ent = dict(b)
+        partner_ent.update(id=partner_id, entity_type="country", name=partner,
+                          source_id=str(partner_id), identifier=partner,
+                          country=p.get("partner_code"), sector="trade",
+                          status=None, payload=None)
+        entities.append(partner_ent)
+
         ts.append(_ts(rec, code=f"gats-{p['hs_code']}", name=p.get("commodity"),
                        value=p["value_usd"], unit="USD",
                        commodity=p.get("commodity"), country=p.get("partner_name"),
                        payload=p))
+
+        # Determine flow direction
+        flow_dir = p.get("flow", "export")
+        src_id = us_id if flow_dir.lower() in ("export", "re-export") else partner_id
+        dst_id = partner_id if flow_dir.lower() in ("export", "re-export") else us_id
+
         flow = dict(b)
         flow.update(flow_type=p["flow"], amount=p["value_usd"], currency="USD",
                     commodity=p.get("commodity"), purpose=None,
-                    source_entity_id=None, dest_entity_id=None, payload=p)
+                    source_entity_id=src_id, dest_entity_id=dst_id, payload=p)
         flows.append(flow)
-    return TransformResult(time_series=ts, flows=flows)
+    return TransformResult(time_series=ts, flows=flows, entities=entities)
 
 
 @register_mapper("NOAA FOSS")
@@ -293,12 +318,25 @@ def _iati(records: list[dict]) -> TransformResult:
                    status=p.get("status"), payload=p)
         entities.append(ent)
 
+        # Create recipient country entity
+        dest_id = None
+        if rc:
+            rc_name = rc[0] if isinstance(rc, list) and rc else rc
+            if rc_name:
+                dest_id = entity_uuid("IATI", f"country-{rc_name}")
+                dest_ent = dict(b)
+                dest_ent.update(id=dest_id, entity_type="country", name=rc_name,
+                              source_id=str(dest_id), identifier=rc_name,
+                              country=rc_name, sector="development",
+                              status=None, payload=None)
+                entities.append(dest_ent)
+
         if p.get("total_value") is not None:
             flow = dict(b)
             flow.update(flow_type="development_aid", amount=p["total_value"],
                         currency=p.get("currency", "USD"), commodity=None,
                         purpose=p.get("title"), source_entity_id=eid,
-                        dest_entity_id=None, payload=p)
+                        dest_entity_id=dest_id, payload=p)
             flows.append(flow)
 
     return TransformResult(entities=entities, flows=flows)
@@ -323,12 +361,23 @@ def _gcf(records: list[dict]) -> TransformResult:
                    status=p.get("status"), payload=p)
         entities.append(ent)
 
+        # Create recipient country entity
+        dest_id = None
+        if country:
+            dest_id = entity_uuid("Green Climate Fund", f"country-{country}")
+            dest_ent = dict(b)
+            dest_ent.update(id=dest_id, entity_type="country", name=country,
+                          source_id=str(dest_id), identifier=country,
+                          country=country, sector="climate",
+                          status=None, payload=None)
+            entities.append(dest_ent)
+
         if p.get("gcf_amount_usd") is not None:
             flow = dict(b)
             flow.update(flow_type="climate_finance", amount=p["gcf_amount_usd"],
                         currency="USD", commodity=None,
                         purpose=p.get("title"), source_entity_id=eid,
-                        dest_entity_id=None, payload=p)
+                        dest_entity_id=dest_id, payload=p)
             flows.append(flow)
 
     return TransformResult(entities=entities, flows=flows)
@@ -591,7 +640,7 @@ def _iuu(records: list[dict]) -> TransformResult:
 
 @register_mapper("Sea Around Us")
 def _sau(records: list[dict]) -> TransformResult:
-    ts, flows = [], []
+    ts, flows, entities = [], [], []
     for rec in records:
         p = rec.get("payload", {})
         b = _base(rec)
@@ -602,8 +651,20 @@ def _sau(records: list[dict]) -> TransformResult:
         dimension = p.get("dimension", "unknown")
         commodity = p.get("entity_name") if dimension in ("taxon", "commercialgroup") else None
 
+        # Create entity for the fishing country/region
+        entity_name = p.get("entity_name", "unknown")
+        eid = None
+        if dimension == "country":
+            eid = entity_uuid("Sea Around Us", f"country-{entity_name}")
+            ent = dict(b)
+            ent.update(id=eid, entity_type="country", name=entity_name,
+                      source_id=str(eid), identifier=entity_name,
+                      country=None, sector="fisheries",
+                      status=None, payload=None)
+            entities.append(ent)
+
         ts.append(_ts(rec, code=f"sau-{region_type}-{dimension}",
-                       name=p.get("entity_name"), value=p["value"],
+                       name=entity_name, value=p["value"],
                        unit=p.get("unit"), commodity=commodity, payload=p))
 
         if dimension == "country":
@@ -611,15 +672,15 @@ def _sau(records: list[dict]) -> TransformResult:
             flow.update(flow_type="catch", amount=p["value"], currency=None,
                         unit=p.get("unit"), commodity=None,
                         purpose=f"{region_type} {p.get('measure', '')}",
-                        source_entity_id=None, dest_entity_id=None, payload=p)
+                        source_entity_id=eid, dest_entity_id=None, payload=p)
             flows.append(flow)
 
-    return TransformResult(time_series=ts, flows=flows)
+    return TransformResult(time_series=ts, flows=flows, entities=entities)
 
 
 @register_mapper("ICES SAG")
 def _ices(records: list[dict]) -> TransformResult:
-    ts, assessments = [], []
+    ts, assessments, entities = [], [], []
     unit_map = {
         "ssb": "tonnes", "fishing_mortality": "F", "recruitment": "thousands",
         "catches": "tonnes", "landings": "tonnes", "discards": "tonnes",
@@ -627,10 +688,19 @@ def _ices(records: list[dict]) -> TransformResult:
     for rec in records:
         p = rec.get("payload", {})
         b = _base(rec)
+        stock = p.get("stock_code", "unknown")
+
+        # Create fish stock entity
+        eid = entity_uuid("ICES SAG", f"stock-{stock}")
+        ent = dict(b)
+        ent.update(id=eid, entity_type="fish_stock", name=stock,
+                   source_id=str(eid), identifier=stock,
+                   country=p.get("ecoregion"), sector="fisheries",
+                   status=p.get("stock_status"), payload=p)
+        entities.append(ent)
 
         if "fishing_mortality" in p:
             # Stock detail record
-            stock = p.get("stock_code", "unknown")
             for metric in ("ssb", "fishing_mortality", "recruitment", "catches", "landings", "discards"):
                 val = p.get(metric)
                 if val is None:
@@ -640,60 +710,81 @@ def _ices(records: list[dict]) -> TransformResult:
                               unit=unit_map.get(metric), commodity=stock, payload=p))
 
             a = dict(b)
-            a.update(entity_id=None, assessor="ICES", metric_code="stock_status",
+            a.update(entity_id=eid, assessor="ICES", metric_code="stock_status",
                      score_numeric=None, score_category=p.get("stock_status"),
                      confidence=None, trend=None, payload=p)
             assessments.append(a)
         else:
             # Summary record
             a = dict(b)
-            a.update(entity_id=None, assessor="ICES", metric_code="stock_advice",
+            a.update(entity_id=eid, assessor="ICES", metric_code="stock_advice",
                      score_numeric=None, score_category=p.get("advice_status"),
                      confidence=None, trend=None, payload=p)
             assessments.append(a)
 
-    return TransformResult(time_series=ts, assessments=assessments)
+    return TransformResult(time_series=ts, assessments=assessments, entities=entities)
 
 
 @register_mapper("FAO FishStatJ")
 def _fao(records: list[dict]) -> TransformResult:
-    ts, flows = [], []
+    ts, flows, entities = [], [], []
     for rec in records:
         p = rec.get("payload", {})
         b = _base(rec)
         if p.get("value") is None:
             continue
 
+        country = p.get("country")
+        eid = None
+        if country:
+            eid = entity_uuid("FAO FishStatJ", f"country-{country}")
+            ent = dict(b)
+            ent.update(id=eid, entity_type="country", name=country,
+                      source_id=str(eid), identifier=country,
+                      country=country, sector="fisheries",
+                      status=None, payload=None)
+            entities.append(ent)
+
         name = p.get("species") or p.get("indicator_name") or p.get("dataset_name", "")
         ts.append(_ts(rec, code=f"fishstat-{p.get('dataset', 'unknown')}",
                        name=name, value=p["value"], unit=p.get("unit"),
-                       commodity=p.get("species"), country=p.get("country"), payload=p))
+                       commodity=p.get("species"), country=country, payload=p))
 
         if p.get("dataset") == "commodities":
             flow = dict(b)
             flow.update(flow_type="fish_trade", amount=p["value"], currency=None,
                         unit=p.get("unit"), commodity=p.get("species"),
-                        purpose=None, source_entity_id=None,
+                        purpose=None, source_entity_id=eid,
                         dest_entity_id=None, payload=p)
             flows.append(flow)
 
-    return TransformResult(time_series=ts, flows=flows)
+    return TransformResult(time_series=ts, flows=flows, entities=entities)
 
 
 @register_mapper("ESVD")
 def _esvd(records: list[dict]) -> TransformResult:
-    assessments = []
+    assessments, entities = [], []
     for rec in records:
         p = rec.get("payload", {})
         b = _base(rec)
+
+        biome = p.get("biome", "unknown")
+        eid = entity_uuid("ESVD", f"biome-{biome}")
+        ent = dict(b)
+        ent.update(id=eid, entity_type="ecosystem", name=biome,
+                   source_id=str(eid), identifier=biome,
+                   country=p.get("country"), sector="ecosystem_services",
+                   status=None, payload=p)
+        entities.append(ent)
+
         a = dict(b)
-        a.update(entity_id=None, assessor="ESVD",
+        a.update(entity_id=eid, assessor="ESVD",
                  metric_code=p.get("service_type", "unknown"),
                  score_numeric=p.get("value_per_ha_year"),
                  score_category=p.get("confidence"),
                  confidence=None, trend=None, payload=p)
         assessments.append(a)
-    return TransformResult(assessments=assessments)
+    return TransformResult(assessments=assessments, entities=entities)
 
 
 @register_mapper("ISA DeepData")

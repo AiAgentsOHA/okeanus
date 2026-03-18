@@ -102,7 +102,8 @@ class NoaaFossAdapter(BaseAdapter):
             logger.error("NOAA FOSS landings fetch failed: %s", exc)
             return []
 
-        records = data if isinstance(data, list) else data.get("data", data.get("results", []))
+        # API returns {items: [...], hasMore, limit, offset, count}
+        records = data.get("items", []) if isinstance(data, dict) else data
         if not isinstance(records, list):
             records = []
 
@@ -112,7 +113,7 @@ class NoaaFossAdapter(BaseAdapter):
             if not isinstance(rec, dict):
                 continue
 
-            year = rec.get("Year") or rec.get("year")
+            year = rec.get("year") or rec.get("Year")
             if year is None:
                 continue
 
@@ -122,26 +123,38 @@ class NoaaFossAdapter(BaseAdapter):
             except (ValueError, TypeError):
                 continue
 
-            pounds = rec.get("Pounds") or rec.get("pounds") or rec.get("Live Pounds")
-            dollars = rec.get("Dollars") or rec.get("dollars") or rec.get("Value")
+            pounds = rec.get("pounds") or rec.get("Pounds")
+            dollars = rec.get("dollars") or rec.get("Dollars")
+            species = rec.get("ts_afs_name") or rec.get("Species") or rec.get("species_name", "")
+            state_name = rec.get("state_name") or rec.get("State") or ""
+            region = rec.get("region_name") or rec.get("Region") or ""
+            collection = rec.get("collection") or rec.get("Collection") or ""
+
+            price_per_lb = None
+            try:
+                if pounds and dollars:
+                    price_per_lb = float(dollars) / float(pounds)
+            except (ValueError, TypeError, ZeroDivisionError):
+                pass
 
             observations.append({
                 "obs_type": "economic",
                 "timestamp": ts,
                 "geometry": {"type": "Point", "coordinates": [-98.5, 39.8]},
-                "source_id": f"foss-land-{rec.get('Species','')}-{rec.get('State','')}-{yr}",
+                "source_id": f"foss-land-{species}-{state_name}-{yr}",
                 "source_name": "NOAA FOSS",
                 "quality_score": 0.95,
                 "payload": {
                     "type": "landings",
-                    "species": rec.get("Species") or rec.get("species_name", ""),
-                    "state": rec.get("State") or rec.get("state_name", ""),
-                    "port": rec.get("Port") or rec.get("port_name", ""),
+                    "species": species,
+                    "state": state_name,
+                    "region": region,
                     "pounds": pounds,
                     "dollars": dollars,
-                    "price_per_lb": (float(dollars) / float(pounds)) if pounds and dollars else None,
+                    "price_per_lb": price_per_lb,
                     "year": yr,
-                    "collection": rec.get("Collection") or rec.get("collection_type", ""),
+                    "collection": collection,
+                    "source": rec.get("source", ""),
                 },
             })
 
@@ -172,7 +185,8 @@ class NoaaFossAdapter(BaseAdapter):
             logger.error("NOAA FOSS trade fetch failed: %s", exc)
             return []
 
-        records = data if isinstance(data, list) else data.get("data", data.get("results", []))
+        # API returns {items: [...], hasMore, limit, offset, count}
+        records = data.get("items", []) if isinstance(data, dict) else data
         if not isinstance(records, list):
             records = []
 
@@ -182,8 +196,8 @@ class NoaaFossAdapter(BaseAdapter):
             if not isinstance(rec, dict):
                 continue
 
-            year = rec.get("Year") or rec.get("year")
-            month = rec.get("Month") or rec.get("month") or 1
+            year = rec.get("year") or rec.get("Year")
+            month = rec.get("month") or rec.get("Month") or 1
 
             try:
                 ts = datetime(int(year), int(month), 1)
@@ -194,16 +208,16 @@ class NoaaFossAdapter(BaseAdapter):
                 "obs_type": "economic",
                 "timestamp": ts,
                 "geometry": {"type": "Point", "coordinates": [-98.5, 39.8]},
-                "source_id": f"foss-trade-{rec.get('Name','')}-{year}-{month}",
+                "source_id": f"foss-trade-{rec.get('name', rec.get('Name',''))}-{year}-{month}",
                 "source_name": "NOAA FOSS",
                 "quality_score": 0.93,
                 "payload": {
                     "type": "foreign_trade",
-                    "product": rec.get("Name") or rec.get("product", ""),
-                    "country": rec.get("Country") or rec.get("country", ""),
-                    "flow": rec.get("Association") or rec.get("flow", ""),
-                    "kilograms": rec.get("Kilograms") or rec.get("kilograms"),
-                    "dollars": rec.get("Dollars") or rec.get("dollars"),
+                    "product": rec.get("name") or rec.get("Name") or rec.get("product", ""),
+                    "country": rec.get("country") or rec.get("Country", ""),
+                    "flow": rec.get("association") or rec.get("Association") or rec.get("flow", ""),
+                    "kilograms": rec.get("kilograms") or rec.get("Kilograms"),
+                    "dollars": rec.get("dollars") or rec.get("Dollars"),
                     "year": int(year),
                     "month": int(month),
                 },

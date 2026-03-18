@@ -111,6 +111,7 @@ class BaseAdapter(ABC):
         params: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
         json: dict[str, Any] | None = None,
+        data: dict[str, Any] | str | None = None,
     ) -> httpx.Response:
         """Issue an HTTP request with rate limiting and exponential-backoff retries.
 
@@ -129,6 +130,8 @@ class BaseAdapter(ABC):
             Additional request headers.
         json:
             JSON body for POST/PUT requests.
+        data:
+            Form-encoded body for POST/PUT requests.
 
         Returns
         -------
@@ -142,7 +145,7 @@ class BaseAdapter(ABC):
         """
         owns_client = client is None
         if owns_client:
-            client = httpx.AsyncClient(timeout=self._timeout)
+            client = httpx.AsyncClient(timeout=self._timeout, follow_redirects=True)
 
         last_exc: Exception | None = None
         try:
@@ -150,7 +153,8 @@ class BaseAdapter(ABC):
                 await self._rate_limit()
                 try:
                     response = await client.request(
-                        method, url, params=params, headers=headers, json=json,
+                        method, url, params=params, headers=headers,
+                        json=json, data=data,
                     )
                     response.raise_for_status()
                     return response

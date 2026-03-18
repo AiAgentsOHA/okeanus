@@ -10,6 +10,7 @@ Note: Requires a free API token from https://api.protectedplanet.net/request
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime
 from typing import Any
 
@@ -25,7 +26,7 @@ class WdpaAdapter(BaseAdapter):
 
     def __init__(self, *, api_token: str = "", **kwargs: Any) -> None:
         super().__init__(requests_per_second=2.0, **kwargs)
-        self._api_token = api_token
+        self._api_token = api_token or os.environ.get("WDPA_API_TOKEN", "")
 
     @property
     def source_name(self) -> str:

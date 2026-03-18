@@ -1,8 +1,9 @@
-"""Bunker Index adapter — marine fuel price indices.
+"""Bunker fuel price adapter — marine fuel price data.
 
-VLSFO, HSFO, IFO380, MDO, and MGO indices since 2009.
+Daily marine fuel prices (MGO, IFO 180, IFO 380) from
+USDA Agricultural Transportation open data (Socrata API).
 
-Data: bunkerindex.com (publicly available indices).
+API: Socrata REST at agtransport.usda.gov.
 No auth required.
 """
 
@@ -16,36 +17,31 @@ from okeanus.adapters.base import BaseAdapter
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://www.bunkerindex.com"
-API_URL = f"{BASE_URL}/api/v1"
+# USDA Agricultural Transportation Socrata API — daily bunker fuel prices
+SOCRATA_URL = "https://agtransport.usda.gov/resource/4v3x-mj86.json"
 
-# Fuel types tracked
-FUEL_TYPES = {
-    "VLSFO": "Very Low Sulphur Fuel Oil (0.5% S)",
-    "HSFO": "High Sulphur Fuel Oil (3.5% S)",
-    "IFO380": "Intermediate Fuel Oil 380cSt",
-    "MDO": "Marine Diesel Oil",
-    "MGO": "Marine Gas Oil",
-    "LSMGO": "Low Sulphur Marine Gas Oil",
+# Fuel types available in the dataset
+FUEL_COLUMNS = {
+    "MGO": "marine_gas_oil",
+    "IFO180": "intermdiate_fuel_oil_180cst",
+    "IFO380": "intermdiate_fuel_oil_380cst",
 }
 
-# Key bunkering ports
-PORTS = [
-    "Singapore", "Rotterdam", "Fujairah", "Houston",
-    "Shanghai", "Busan", "Gibraltar", "Piraeus",
-    "Panama", "Los Angeles", "New York", "Hong Kong",
-]
+FUEL_NAMES = {
+    "MGO": "Marine Gas Oil",
+    "IFO180": "Intermediate Fuel Oil 180cSt",
+    "IFO380": "Intermediate Fuel Oil 380cSt",
+}
 
 
 class BunkerIndexAdapter(BaseAdapter):
-    """Connector for Bunker Index — marine fuel prices (no auth required).
+    """Connector for bunker fuel prices via USDA Socrata (no auth required).
 
-    Returns daily VLSFO/HSFO/MGO/MDO indices and port-specific
-    bunker fuel prices.
+    Returns daily MGO, IFO 180, and IFO 380 price data.
     """
 
     def __init__(self, **kwargs: Any) -> None:
-        super().__init__(requests_per_second=1.0, **kwargs)
+        super().__init__(requests_per_second=2.0, **kwargs)
 
     @property
     def source_name(self) -> str:
@@ -53,7 +49,7 @@ class BunkerIndexAdapter(BaseAdapter):
 
     @property
     def source_url(self) -> str:
-        return BASE_URL
+        return "https://agtransport.usda.gov/"
 
     @property
     def update_frequency(self) -> str:
@@ -66,116 +62,81 @@ class BunkerIndexAdapter(BaseAdapter):
         time_end: datetime,
         **params: Any,
     ) -> list[dict[str, Any]]:
-        """Fetch bunker fuel price indices.
+        """Fetch bunker fuel prices from USDA Socrata API.
 
         Extra params:
-            fuel_type: fuel code (default: 'VLSFO')
-            port: bunkering port name
+            fuel_type: 'MGO', 'IFO180', 'IFO380', or 'all' (default: 'all')
             limit: max records (default: 200)
         """
-        fuel_type = params.get("fuel_type", "VLSFO")
-        port = params.get("port")
+        fuel_type = params.get("fuel_type", "all")
         limit = params.get("limit", 200)
 
-        # Try API
-        url = f"{API_URL}/prices"
+        start_str = time_start.strftime("%Y-%m-%dT00:00:00.000")
+        end_str = time_end.strftime("%Y-%m-%dT23:59:59.999")
+
         query: dict[str, Any] = {
-            "fuel": fuel_type,
-            "startDate": time_start.strftime("%Y-%m-%d"),
-            "endDate": time_end.strftime("%Y-%m-%d"),
-            "format": "json",
+            "$where": f"day >= '{start_str}' AND day <= '{end_str}'",
+            "$order": "day DESC",
+            "$limit": limit,
         }
-        if port:
-            query["port"] = port
 
         try:
-            resp = await self._request("GET", url, params=query)
-            data = resp.json()
+            resp = await self._request("GET", SOCRATA_URL, params=query)
+            records = resp.json()
         except Exception as exc:
-            logger.warning("Bunker Index API failed: %s, trying index page", exc)
-            return await self._fetch_index_page(fuel_type, time_start, time_end, limit)
+            logger.error("Bunker fuel price fetch failed: %s", exc)
+            return []
 
-        records = data if isinstance(data, list) else data.get("prices", data.get("data", []))
         if not isinstance(records, list):
-            records = []
+            logger.warning("Bunker fuel API returned unexpected format")
+            return []
 
         observations: list[dict[str, Any]] = []
 
-        for rec in records[:limit]:
+        for rec in records:
             if not isinstance(rec, dict):
                 continue
 
-            date_str = rec.get("date") or rec.get("Date")
-            price = rec.get("price") or rec.get("Price") or rec.get("value")
-
-            if price is None or date_str is None:
-                continue
-
+            date_str = rec.get("day", "")
             try:
-                val = float(price)
                 ts = datetime.strptime(str(date_str)[:10], "%Y-%m-%d")
             except (ValueError, TypeError):
                 continue
 
-            if ts < time_start or ts > time_end:
-                continue
+            # Determine which fuel columns to include
+            if fuel_type == "all":
+                fuels_to_check = FUEL_COLUMNS.items()
+            else:
+                col = FUEL_COLUMNS.get(fuel_type)
+                if col:
+                    fuels_to_check = [(fuel_type, col)]
+                else:
+                    fuels_to_check = FUEL_COLUMNS.items()
 
-            port_name = rec.get("port") or rec.get("Port") or port or "Global"
+            for fuel_code, col_name in fuels_to_check:
+                price_str = rec.get(col_name)
+                if not price_str:
+                    continue
 
-            observations.append({
-                "obs_type": "economic",
-                "timestamp": ts,
-                "geometry": {"type": "Point", "coordinates": [0, 0]},
-                "source_id": f"bunker-{fuel_type}-{port_name}-{date_str}",
-                "source_name": "Bunker Index",
-                "quality_score": 0.90,
-                "payload": {
-                    "fuel_type": fuel_type,
-                    "fuel_name": FUEL_TYPES.get(fuel_type, fuel_type),
-                    "port": port_name,
-                    "price_usd_mt": val,
-                    "date": str(date_str)[:10],
-                    "change": rec.get("change"),
-                    "change_pct": rec.get("changePct"),
-                },
-            })
+                try:
+                    price = float(price_str)
+                except (ValueError, TypeError):
+                    continue
 
-        logger.info("Bunker Index %s returned %d prices", fuel_type, len(observations))
-        return observations
+                observations.append({
+                    "obs_type": "economic",
+                    "timestamp": ts,
+                    "geometry": {"type": "Point", "coordinates": [0, 0]},
+                    "source_id": f"bunker-{fuel_code}-{date_str[:10]}",
+                    "source_name": "USDA Bunker Fuel Prices",
+                    "quality_score": 0.90,
+                    "payload": {
+                        "fuel_type": fuel_code,
+                        "fuel_name": FUEL_NAMES.get(fuel_code, fuel_code),
+                        "price_usd_mt": price,
+                        "date": str(date_str)[:10],
+                    },
+                })
 
-    async def _fetch_index_page(
-        self,
-        fuel_type: str,
-        time_start: datetime,
-        time_end: datetime,
-        limit: int,
-    ) -> list[dict[str, Any]]:
-        """Fallback: fetch from index data page."""
-        url = f"{BASE_URL}/data/{fuel_type.lower()}"
-
-        try:
-            resp = await self._request("GET", url)
-            data = resp.json()
-        except Exception as exc:
-            logger.error("Bunker Index page fetch failed: %s", exc)
-            return []
-
-        records = data if isinstance(data, list) else data.get("index", data.get("history", []))
-        if not isinstance(records, list):
-            return []
-
-        observations: list[dict[str, Any]] = []
-        for rec in records[:limit]:
-            if not isinstance(rec, dict):
-                continue
-            observations.append({
-                "obs_type": "economic",
-                "timestamp": datetime.now(),
-                "geometry": {"type": "Point", "coordinates": [0, 0]},
-                "source_id": f"bunker-page-{fuel_type}-{len(observations)}",
-                "source_name": "Bunker Index",
-                "quality_score": 0.80,
-                "payload": {"fuel_type": fuel_type, "raw": rec},
-            })
-
+        logger.info("Bunker fuel prices returned %d observations", len(observations))
         return observations

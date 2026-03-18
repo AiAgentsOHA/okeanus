@@ -52,13 +52,22 @@ class GfsForecastAdapter(BaseAdapter):
         """
         w, s, e, n = bbox
         resolution = params.get("resolution", 1.0)
+        limit = params.get("limit", 20)
+
+        # Clamp to a reasonable region to avoid timeout on global queries
+        if (e - w) > 60 or (n - s) > 60:
+            w, s, e, n = -80, 25, -60, 45
+
+        # Clamp time range to 3 days of forecast
+        from datetime import timedelta
+        if (time_end - time_start) > timedelta(days=3):
+            time_start = time_end - timedelta(days=3)
 
         observations: list[dict[str, Any]] = []
 
-        # Sample grid points across bbox
-        import math
-        lon_steps = max(1, min(int((e - w) / resolution), 5))
-        lat_steps = max(1, min(int((n - s) / resolution), 5))
+        # Sample grid points across bbox — limit to 2x2 max
+        lon_steps = max(1, min(int((e - w) / resolution), 2))
+        lat_steps = max(1, min(int((n - s) / resolution), 2))
 
         for i in range(lon_steps):
             for j in range(lat_steps):

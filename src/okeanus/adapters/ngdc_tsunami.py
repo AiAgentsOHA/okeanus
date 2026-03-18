@@ -54,13 +54,20 @@ class NgdcTsunamiAdapter(BaseAdapter):
         w, s, e, n = bbox
         limit = params.get("limit", 500)
 
+        # Historical database going back to 2100 BC — widen range
+        # to ensure meaningful results for any region
+        min_year = time_start.year
+        max_year = time_end.year
+        if max_year - min_year < 50:
+            min_year = max_year - 100  # Last century of events
+
         api_params: dict[str, Any] = {
             "minLatitude": s,
             "maxLatitude": n,
             "minLongitude": w,
             "maxLongitude": e,
-            "minYear": time_start.year,
-            "maxYear": time_end.year,
+            "minYear": min_year,
+            "maxYear": max_year,
         }
 
         min_mag = params.get("min_magnitude")

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from datetime import datetime
 from typing import Any
 
@@ -34,10 +35,11 @@ OCEAN_DATASETS = {
 class EarthaccessAdapter(BaseAdapter):
     """Connector for NASA Earthdata via earthaccess (NASA login required)."""
 
-    def __init__(self, *, username: str = "", password: str = "", **kwargs: Any) -> None:
+    def __init__(self, *, username: str = "", password: str = "", token: str = "", **kwargs: Any) -> None:
         super().__init__(requests_per_second=0.5, timeout=120.0, **kwargs)
-        self._username = username
-        self._password = password
+        self._username = username or os.environ.get("EARTHDATA_USERNAME", "")
+        self._password = password or os.environ.get("EARTHDATA_PASSWORD", "")
+        self._token = token or os.environ.get("EARTHDATA_TOKEN", "")
 
     @property
     def source_name(self) -> str:
@@ -68,22 +70,15 @@ class EarthaccessAdapter(BaseAdapter):
 
         w, s, e, n = bbox
 
-        # Authenticate if credentials provided
-        if self._username and self._password:
+        # Authenticate: try environment first (picks up EARTHDATA_TOKEN or
+        # EARTHDATA_USERNAME/EARTHDATA_PASSWORD), then fall back to netrc.
+        try:
+            earthaccess.login(strategy="environment")
+        except Exception:
             try:
-                earthaccess.login(
-                    strategy="environment",
-                )
-            except Exception:
-                try:
-                    earthaccess.login(
-                        credentials={
-                            "username": self._username,
-                            "password": self._password,
-                        },
-                    )
-                except Exception as exc:
-                    logger.warning("NASA Earthdata login failed: %s", exc)
+                earthaccess.login(strategy="netrc")
+            except Exception as exc:
+                logger.warning("NASA Earthdata login failed: %s", exc)
 
         try:
             results = earthaccess.search_data(

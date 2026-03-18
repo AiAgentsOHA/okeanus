@@ -17,7 +17,15 @@ from okeanus.adapters.base import BaseAdapter
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://coast.noaa.gov/api/enow"
+ARCGIS_URL = "https://www.coast.noaa.gov/arcgis/rest/services/enow/OceanEconomybyIndicator/MapServer"
+
+# Layer IDs for state-level data by indicator
+STATE_LAYERS = {
+    "Employment": 9,
+    "Wages": 25,
+    "GDP": 41,
+    "Establishments": 57,
+}
 
 SECTORS = [
     "All Ocean Sectors",
@@ -67,34 +75,38 @@ class NoaaEnowAdapter(BaseAdapter):
             sector: ENOW sector name
             geo_type: 'State', 'County', or 'National' (default: 'State')
         """
-        state_fips = params.get("state_fips")
-        county_fips = params.get("county_fips")
-        sector = params.get("sector")
-        geo_type = params.get("geo_type", "State")
+        limit = params.get("limit", 500)
         year_start = time_start.year
         year_end = time_end.year
 
+        # Use ArcGIS MapServer — layer 1 is AllOceanSectors_Employment
+        # which includes Employment, Wages, GDP, Establishments in attributes
+        layer_id = 1  # AllOceanSectors_Employment
+        url = f"{ARCGIS_URL}/{layer_id}/query"
+
+        # ENOW data lags several years; widen range to include older data
+        if year_start > 2010:
+            year_start = 2010
+        # Build where clause for year range
+        where_parts = [f"Year>={year_start}", f"Year<={year_end}"]
+        where = " AND ".join(where_parts)
+
         query: dict[str, Any] = {
-            "geoType": geo_type,
-            "format": "json",
+            "where": where,
+            "outFields": "GeoID,GeoName,OceanSect_ID,OceanSector,Year,Employment,Wages,GDP,Establishments",
+            "returnGeometry": "false",
+            "resultRecordCount": limit,
+            "f": "json",
         }
-        if state_fips:
-            query["stateFips"] = state_fips
-        if county_fips:
-            query["countyFips"] = county_fips
-        if sector:
-            query["sector"] = sector
 
         try:
-            resp = await self._request("GET", f"{BASE_URL}/data", params=query)
+            resp = await self._request("GET", url, params=query)
             data = resp.json()
         except Exception as exc:
             logger.error("NOAA ENOW fetch failed: %s", exc)
             return []
 
-        records = data if isinstance(data, list) else data.get("data", data.get("results", []))
-        if not isinstance(records, list):
-            records = []
+        features = data.get("features", [])
 
         w, s, e, n = bbox
         center_lon = (w + e) / 2
@@ -102,32 +114,43 @@ class NoaaEnowAdapter(BaseAdapter):
 
         observations: list[dict[str, Any]] = []
 
-        for rec in records:
-            if not isinstance(rec, dict):
+        for feat in features:
+            attrs = feat.get("attributes", {})
+            if not attrs:
                 continue
 
-            year = rec.get("Year") or rec.get("year")
+            year = attrs.get("Year")
             try:
                 yr = int(year)
-                if yr < year_start or yr > year_end:
-                    continue
                 ts = datetime(yr, 1, 1)
             except (ValueError, TypeError):
                 continue
 
-            fips = rec.get("GeoID") or rec.get("FIPS") or ""
-            geo_name = rec.get("GeoName") or rec.get("Name") or ""
-            sect = rec.get("Sector") or rec.get("sector") or "All"
+            fips = str(attrs.get("GeoID", ""))
+            geo_name = attrs.get("GeoName", "")
+            sect = attrs.get("OceanSector", "All Ocean Sectors")
+
+            gdp = attrs.get("GDP")
+            employment = attrs.get("Employment")
+            wages = attrs.get("Wages")
+            establishments = attrs.get("Establishments")
+
+            # Skip suppressed data (-9999 means suppressed)
+            if gdp == -9999:
+                gdp = None
+            if employment == -9999:
+                employment = None
+            if wages == -9999:
+                wages = None
+            if establishments == -9999:
+                establishments = None
 
             observations.append({
                 "obs_type": "economic",
                 "timestamp": ts,
                 "geometry": {
                     "type": "Point",
-                    "coordinates": [
-                        rec.get("Longitude") or center_lon,
-                        rec.get("Latitude") or center_lat,
-                    ],
+                    "coordinates": [center_lon, center_lat],
                 },
                 "source_id": f"enow-{fips}-{sect}-{yr}",
                 "source_name": "NOAA ENOW",
@@ -135,14 +158,13 @@ class NoaaEnowAdapter(BaseAdapter):
                 "payload": {
                     "fips": fips,
                     "geo_name": geo_name,
-                    "geo_type": geo_type,
+                    "geo_type": "State",
                     "sector": sect,
                     "year": yr,
-                    "gdp": rec.get("GDP") or rec.get("gdp"),
-                    "employment": rec.get("Employment") or rec.get("employment"),
-                    "wages": rec.get("Wages") or rec.get("wages"),
-                    "establishments": rec.get("Establishments") or rec.get("establishments"),
-                    "state_name": rec.get("StateName") or rec.get("state_name", ""),
+                    "gdp": gdp,
+                    "employment": employment,
+                    "wages": wages,
+                    "establishments": establishments,
                 },
             })
 

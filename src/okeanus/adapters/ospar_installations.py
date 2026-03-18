@@ -18,7 +18,8 @@ from okeanus.adapters.base import BaseAdapter
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://odims.ospar.org/api/v1"
-ARCGIS_URL = "https://odims.ospar.org/arcgis/rest/services/OSPAR/Offshore_Installations/MapServer/0"
+WFS_URL = "https://odims.ospar.org/geoserver/ows"
+WFS_LAYER = "odims:ospar_offshore_installations_2023_01_001"
 
 
 class OsparInstallationsAdapter(BaseAdapter):
@@ -63,31 +64,35 @@ class OsparInstallationsAdapter(BaseAdapter):
 
         w, s, e, n = bbox
 
-        # Try ArcGIS REST endpoint
-        where_parts = ["1=1"]
+        # Use OSPAR GeoServer WFS endpoint
+        cql_parts: list[str] = []
         if status:
-            where_parts = [f"Status = '{status}'"]
+            cql_parts.append(f"Current_st='{status}'")
         if country:
-            where_parts.append(f"Country = '{country}'")
+            cql_parts.append(f"Country='{country}'")
 
         query: dict[str, Any] = {
-            "where": " AND ".join(where_parts),
-            "geometry": f"{w},{s},{e},{n}",
-            "geometryType": "esriGeometryEnvelope",
-            "inSR": "4326",
-            "outSR": "4326",
-            "spatialRel": "esriSpatialRelIntersects",
-            "outFields": "*",
-            "returnGeometry": "true",
-            "f": "geojson",
-            "resultRecordCount": limit,
+            "service": "WFS",
+            "version": "1.0.0",
+            "request": "GetFeature",
+            "typeName": WFS_LAYER,
+            "outputFormat": "application/json",
+            "maxFeatures": limit,
+            "srsName": "EPSG:4326",
         }
 
+        # WFS 1.0.0 uses lon,lat bbox order (matches our internal convention)
+        if not (w <= -179 and s <= -89 and e >= 179 and n >= 89):
+            query["BBOX"] = f"{w},{s},{e},{n}"
+
+        if cql_parts:
+            query["CQL_FILTER"] = " AND ".join(cql_parts)
+
         try:
-            resp = await self._request("GET", f"{ARCGIS_URL}/query", params=query)
+            resp = await self._request("GET", WFS_URL, params=query)
             data = resp.json()
         except Exception as exc:
-            logger.warning("OSPAR ArcGIS failed: %s, trying API", exc)
+            logger.warning("OSPAR WFS failed: %s, trying API fallback", exc)
             return await self._fetch_api(bbox, status, country, limit)
 
         features = data.get("features", [])
@@ -101,15 +106,13 @@ class OsparInstallationsAdapter(BaseAdapter):
             geom = feat.get("geometry", {})
             coords = geom.get("coordinates", [0, 0])
 
-            install_date = props.get("InstallDate") or props.get("Year_Installed") or ""
+            # WFS fields: ID, Country, Year, Name, Location, Latitude,
+            # Longitude, Water_dept, Operator, Oper_st, Current_st,
+            # Primary_hy, Category, Function, Weight_sub, Weight_top
+            year_val = props.get("Year") or ""
             try:
-                if isinstance(install_date, (int, float)):
-                    yr = int(install_date)
-                    ts = datetime(yr, 1, 1) if yr > 1900 else datetime.now()
-                elif isinstance(install_date, str) and install_date:
-                    ts = datetime.strptime(install_date[:10], "%Y-%m-%d")
-                else:
-                    ts = datetime.now()
+                yr = int(year_val) if year_val else 0
+                ts = datetime(yr, 1, 1) if yr > 1900 else datetime.now()
             except (ValueError, TypeError):
                 ts = datetime.now()
 
@@ -120,20 +123,22 @@ class OsparInstallationsAdapter(BaseAdapter):
                     "type": "Point",
                     "coordinates": coords if isinstance(coords, list) and len(coords) >= 2 else [0, 0],
                 },
-                "source_id": f"ospar-{props.get('Name') or props.get('OBJECTID', len(observations))}",
+                "source_id": f"ospar-{props.get('ID') or props.get('Name') or len(observations)}",
                 "source_name": "OSPAR",
                 "quality_score": 0.93,
                 "payload": {
-                    "name": props.get("Name") or props.get("Installation_Name", ""),
-                    "operator": props.get("Operator") or props.get("operator", ""),
-                    "country": props.get("Country") or props.get("country", ""),
-                    "status": props.get("Status") or props.get("status", ""),
-                    "type": props.get("Type") or props.get("Installation_Type", ""),
-                    "field_name": props.get("Field") or props.get("Field_Name", ""),
-                    "water_depth_m": props.get("Water_Depth") or props.get("Depth"),
-                    "year_installed": props.get("Year_Installed"),
-                    "year_decommissioned": props.get("Year_Decommissioned"),
-                    "weight_tonnes": props.get("Weight") or props.get("Topside_Weight"),
+                    "name": props.get("Name", ""),
+                    "operator": props.get("Operator", ""),
+                    "country": props.get("Country", ""),
+                    "status": props.get("Current_st", ""),
+                    "category": props.get("Category", ""),
+                    "function": props.get("Function", ""),
+                    "primary_hydrocarbon": props.get("Primary_hy", ""),
+                    "location": props.get("Location", ""),
+                    "water_depth_m": props.get("Water_dept"),
+                    "weight_substructure": props.get("Weight_sub"),
+                    "weight_topside": props.get("Weight_top"),
+                    "year": yr if yr > 1900 else None,
                 },
             })
 

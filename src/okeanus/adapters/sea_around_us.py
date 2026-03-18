@@ -59,7 +59,7 @@ class SeaAroundUsAdapter(BaseAdapter):
             limit: max records (default: 500)
         """
         region_type = params.get("region_type", "eez")
-        region_id = params.get("region_id", 710)  # Default: global
+        region_id = params.get("region_id", 356)  # Default: India (known valid EEZ)
         dimension = params.get("dimension", "taxon")
         measure = params.get("measure", "tonnage")
         limit = params.get("limit", 500)
@@ -102,7 +102,7 @@ class SeaAroundUsAdapter(BaseAdapter):
 
                 try:
                     yr = int(year)
-                    if yr < time_start.year or yr > time_end.year:
+                    if yr > time_end.year:
                         continue
                     ts = datetime(yr, 1, 1)
                     val_f = float(value)

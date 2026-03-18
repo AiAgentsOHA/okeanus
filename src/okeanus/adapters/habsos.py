@@ -1,7 +1,7 @@
 """NOAA HABSOS adapter — Harmful Algal BloomS Observing System.
 
 HAB cell counts and species observations along US coastal waters.
-No auth required.
+No auth required.  Uses the NCEI ArcGIS map service for HABSOS data.
 
 Data portal: https://habsos.noaa.gov/
 """
@@ -16,14 +16,25 @@ from okeanus.adapters.base import BaseAdapter
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://habsos.noaa.gov"
+# HABSOS cell count data served via NCDC ArcGIS MapServer.
+# Multiple URL patterns — NCEI has restructured endpoints historically.
+_ARCGIS_URLS = [
+    (
+        "https://gis.ncdc.noaa.gov/arcgis/rest/services"
+        "/ms/HABSOS_CellCounts/MapServer/0/query"
+    ),
+    (
+        "https://gis.ncdc.noaa.gov/arcgis/rest/services"
+        "/ms/HABSOS_CellCounts/MapServer/1/query"
+    ),
+]
 
 
 class HabsosAdapter(BaseAdapter):
     """Connector for NOAA HABSOS HAB cell count observations."""
 
     def __init__(self, **kwargs: Any) -> None:
-        super().__init__(requests_per_second=1.0, **kwargs)
+        super().__init__(requests_per_second=1.0, timeout=60.0, **kwargs)
 
     @property
     def source_name(self) -> str:
@@ -31,7 +42,7 @@ class HabsosAdapter(BaseAdapter):
 
     @property
     def source_url(self) -> str:
-        return BASE_URL
+        return "https://habsos.noaa.gov/"
 
     @property
     def update_frequency(self) -> str:
@@ -49,73 +60,94 @@ class HabsosAdapter(BaseAdapter):
         Extra params:
             species: Species name filter (e.g. 'Karenia brevis')
             state: US state filter (e.g. 'FL', 'TX')
+            limit: max records (default 500)
         """
         w, s, e, n = bbox
         limit = params.get("limit", 500)
 
-        api_params: dict[str, Any] = {
-            "minLon": w,
-            "minLat": s,
-            "maxLon": e,
-            "maxLat": n,
-            "startDate": time_start.strftime("%m/%d/%Y"),
-            "endDate": time_end.strftime("%m/%d/%Y"),
-            "top": limit,
-        }
-        if species := params.get("species"):
-            api_params["species"] = species
-        if state := params.get("state"):
-            api_params["state"] = state
+        # Clamp global bbox to Gulf of Mexico where HABSOS data exists
+        if (e - w) > 100 or (n - s) > 100:
+            w, s, e, n = -98.0, 24.0, -80.0, 31.0
 
-        try:
-            resp = await self._request(
-                "GET", f"{BASE_URL}/api/observations", params=api_params,
-            )
-            data = resp.json()
-        except Exception as exc:
-            logger.error("HABSOS fetch failed: %s", exc)
+        where_parts: list[str] = []
+        if species := params.get("species"):
+            where_parts.append(f"GENUS = '{species.split()[0]}'" if " " in species else f"GENUS = '{species}'")
+        if state := params.get("state"):
+            where_parts.append(f"STATE_ID = '{state}'")
+        where = " AND ".join(where_parts) if where_parts else "1=1"
+
+        api_params: dict[str, Any] = {
+            "where": where,
+            "geometry": f"{w},{s},{e},{n}",
+            "geometryType": "esriGeometryEnvelope",
+            "inSR": "4326",
+            "outSR": "4326",
+            "spatialRel": "esriSpatialRelIntersects",
+            "outFields": "*",
+            "returnGeometry": "true",
+            "resultRecordCount": limit,
+            "f": "json",
+        }
+
+        # Try multiple ArcGIS endpoint URLs — NCEI restructures layers
+        data: dict[str, Any] = {}
+        for arcgis_url in _ARCGIS_URLS:
+            try:
+                resp = await self._request("GET", arcgis_url, params=api_params)
+                data = resp.json()
+                if data.get("features") or "error" not in data:
+                    break
+            except Exception as exc:
+                logger.debug("HABSOS endpoint %s failed: %s", arcgis_url, exc)
+
+        if "error" in data:
+            logger.error("HABSOS ArcGIS service unavailable: %s", data["error"])
             return []
 
-        results = data if isinstance(data, list) else data.get("value", data.get("results", []))
+        features = data.get("features", [])
         observations: list[dict[str, Any]] = []
 
-        for rec in results:
-            if not isinstance(rec, dict):
-                continue
+        for feat in features:
+            geom = feat.get("geometry", {})
+            attrs = feat.get("attributes", {})
 
-            lon = rec.get("LONGITUDE", rec.get("longitude"))
-            lat = rec.get("LATITUDE", rec.get("latitude"))
+            lon = geom.get("x")
+            lat = geom.get("y")
             if lon is None or lat is None:
                 continue
 
-            date_str = rec.get("SAMPLE_DATE") or rec.get("sampleDate", "")
+            raw_date = attrs.get("SAMPLE_DATE") or attrs.get("sampleDate")
             try:
-                if "T" in str(date_str):
-                    ts = datetime.fromisoformat(str(date_str).replace("Z", "+00:00"))
+                if isinstance(raw_date, (int, float)) and abs(raw_date) > 1e10:
+                    ts = datetime.utcfromtimestamp(raw_date / 1000)
+                elif raw_date:
+                    ts = datetime.fromisoformat(str(raw_date).replace("Z", "+00:00"))
                 else:
-                    ts = datetime.fromisoformat(str(date_str) + "T00:00:00+00:00")
-            except (ValueError, AttributeError):
-                continue
+                    ts = time_start
+            except (ValueError, TypeError, OSError):
+                ts = time_start
 
-            cell_count = rec.get("CELLCOUNT", rec.get("cellCount"))
+            cell_count = attrs.get("CELLCOUNT", attrs.get("cellCount"))
 
             observations.append({
                 "obs_type": "biological",
                 "timestamp": ts,
                 "geometry": {"type": "Point", "coordinates": [float(lon), float(lat)]},
-                "source_id": f"habsos-{rec.get('ID', rec.get('id', ''))}",
+                "source_id": f"habsos-{attrs.get('OBJECTID', attrs.get('ID', len(observations)))}",
                 "source_name": "HABSOS",
                 "quality_score": 0.9,
                 "payload": {
-                    "species": rec.get("GENUS", rec.get("genus", ""))
-                    + " " + rec.get("SPECIES", rec.get("species", "")),
+                    "species": (
+                        (attrs.get("GENUS", "") or "") + " " +
+                        (attrs.get("SPECIES", "") or "")
+                    ).strip(),
                     "cell_count_per_l": cell_count,
-                    "category": rec.get("CATEGORY", rec.get("category", "")),
-                    "state": rec.get("STATE_ID", rec.get("state", "")),
-                    "description": rec.get("DESCRIPTION", ""),
-                    "sample_depth_m": rec.get("SAMPLE_DEPTH"),
-                    "water_temp_c": rec.get("WATER_TEMP"),
-                    "salinity_psu": rec.get("SALINITY"),
+                    "category": attrs.get("CATEGORY", ""),
+                    "state": attrs.get("STATE_ID", ""),
+                    "description": attrs.get("DESCRIPTION", ""),
+                    "sample_depth_m": attrs.get("SAMPLE_DEPTH"),
+                    "water_temp_c": attrs.get("WATER_TEMP"),
+                    "salinity_psu": attrs.get("SALINITY"),
                 },
             })
 

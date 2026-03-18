@@ -9,7 +9,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Query
 from geoalchemy2.functions import ST_MakeEnvelope
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from okeanus.db.postgres import async_session_factory
@@ -38,6 +38,7 @@ async def list_timeseries(
     commodity: Annotated[str | None, Query(description="Commodity filter")] = None,
     country: Annotated[str | None, Query(description="Country ISO code")] = None,
     source_name: Annotated[str | None, Query(description="Data source name")] = None,
+    entity_id: Annotated[uuid.UUID | None, Query(description="Linked entity UUID")] = None,
     time_start: Annotated[datetime | None, Query(description="Start time (ISO 8601)")] = None,
     time_end: Annotated[datetime | None, Query(description="End time (ISO 8601)")] = None,
     bbox: Annotated[str | None, Query(description="Bounding box: west,south,east,north")] = None,
@@ -60,6 +61,9 @@ async def list_timeseries(
     if source_name:
         stmt = stmt.where(TimeSeries.source_name == source_name)
         count_stmt = count_stmt.where(TimeSeries.source_name == source_name)
+    if entity_id:
+        stmt = stmt.where(TimeSeries.entity_id == entity_id)
+        count_stmt = count_stmt.where(TimeSeries.entity_id == entity_id)
     if time_start:
         stmt = stmt.where(TimeSeries.timestamp >= time_start)
         count_stmt = count_stmt.where(TimeSeries.timestamp >= time_start)
@@ -164,6 +168,9 @@ async def get_entity(entity_id: uuid.UUID) -> dict[str, Any]:
 async def list_flows(
     flow_type: Annotated[str | None, Query(description="Flow type filter")] = None,
     commodity: Annotated[str | None, Query(description="Commodity filter")] = None,
+    source_entity_id: Annotated[uuid.UUID | None, Query(description="Source entity UUID")] = None,
+    dest_entity_id: Annotated[uuid.UUID | None, Query(description="Destination entity UUID")] = None,
+    min_amount: Annotated[float | None, Query(description="Minimum flow amount")] = None,
     time_start: Annotated[datetime | None, Query(description="Start time (ISO 8601)")] = None,
     time_end: Annotated[datetime | None, Query(description="End time (ISO 8601)")] = None,
     limit: Annotated[int, Query(ge=1, le=1000)] = 100,
@@ -179,6 +186,15 @@ async def list_flows(
     if commodity:
         stmt = stmt.where(Flow.commodity == commodity)
         count_stmt = count_stmt.where(Flow.commodity == commodity)
+    if source_entity_id:
+        stmt = stmt.where(Flow.source_entity_id == source_entity_id)
+        count_stmt = count_stmt.where(Flow.source_entity_id == source_entity_id)
+    if dest_entity_id:
+        stmt = stmt.where(Flow.dest_entity_id == dest_entity_id)
+        count_stmt = count_stmt.where(Flow.dest_entity_id == dest_entity_id)
+    if min_amount is not None:
+        stmt = stmt.where(Flow.amount >= min_amount)
+        count_stmt = count_stmt.where(Flow.amount >= min_amount)
     if time_start:
         stmt = stmt.where(Flow.timestamp >= time_start)
         count_stmt = count_stmt.where(Flow.timestamp >= time_start)
@@ -201,6 +217,7 @@ async def list_flows(
 @router.get("/events")
 async def list_events(
     event_type: Annotated[str | None, Query(description="Event type filter")] = None,
+    entity_id: Annotated[uuid.UUID | None, Query(description="Linked entity UUID")] = None,
     bbox: Annotated[str | None, Query(description="Bounding box: west,south,east,north")] = None,
     time_start: Annotated[datetime | None, Query(description="Start time (ISO 8601)")] = None,
     time_end: Annotated[datetime | None, Query(description="End time (ISO 8601)")] = None,
@@ -214,6 +231,9 @@ async def list_events(
     if event_type:
         stmt = stmt.where(Event.event_type == event_type)
         count_stmt = count_stmt.where(Event.event_type == event_type)
+    if entity_id:
+        stmt = stmt.where(Event.entity_id == entity_id)
+        count_stmt = count_stmt.where(Event.entity_id == entity_id)
     if bbox:
         w, s, e, n = [float(x) for x in bbox.split(",")]
         envelope = ST_MakeEnvelope(w, s, e, n, 4326)

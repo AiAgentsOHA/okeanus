@@ -60,15 +60,17 @@ class EmodnetBathymetryAdapter(BaseAdapter):
         """
         w, s, e, n = bbox
         limit = params.get("limit", 100)
-        resolution = params.get("resolution", 0.1)
+
+        # Clamp global bbox to European seas where EMODnet has coverage
+        if (e - w) > 100 or (n - s) > 100:
+            w, s, e, n = -30.0, 30.0, 45.0, 75.0
 
         # Use GetFeatureInfo for point depth queries across a grid
         observations: list[dict[str, Any]] = []
 
-        # Sample points across the bbox
-        import math
-        lon_steps = max(1, min(int((e - w) / resolution), int(math.sqrt(limit))))
-        lat_steps = max(1, min(int((n - s) / resolution), limit // lon_steps))
+        # Limit grid to 5x5 max to avoid excessive requests
+        lon_steps = min(5, max(1, limit))
+        lat_steps = min(5, max(1, limit // lon_steps))
 
         lon_step = (e - w) / lon_steps if lon_steps > 1 else 0
         lat_step = (n - s) / lat_steps if lat_steps > 1 else 0
@@ -89,6 +91,7 @@ class EmodnetBathymetryAdapter(BaseAdapter):
                     "query_layers": "emodnet:mean",
                     "info_format": "application/json",
                     "crs": "EPSG:4326",
+                    # WMS 1.3.0 + EPSG:4326 uses lat,lon axis order
                     "bbox": f"{lat - 0.01},{lon - 0.01},{lat + 0.01},{lon + 0.01}",
                     "width": 2,
                     "height": 2,
@@ -105,7 +108,7 @@ class EmodnetBathymetryAdapter(BaseAdapter):
                 features = data.get("features", [])
                 for feat in features:
                     props = feat.get("properties", {})
-                    depth = props.get("GRAY_INDEX", props.get("value"))
+                    depth = props.get("Depth", props.get("GRAY_INDEX", props.get("value")))
                     if depth is not None:
                         observations.append({
                             "obs_type": "physical",

@@ -16,7 +16,7 @@ from okeanus.adapters.base import BaseAdapter
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://gis.boem.gov/arcgis/rest/services/BOEMWindEnergyAreas/MapServer/0/query"
+BASE_URL = "https://services7.arcgis.com/G5Ma95RzqJRPKsWL/arcgis/rest/services/Wind_Leases__BOEM_/FeatureServer/0/query"
 
 
 class BoemWindAdapter(BaseAdapter):
@@ -82,7 +82,7 @@ class BoemWindAdapter(BaseAdapter):
         }
 
         try:
-            resp = await self._request("GET", BASE_URL, params=api_params)
+            resp = await self._request("POST", BASE_URL, data=api_params)
             data = resp.json()
         except Exception as exc:
             logger.error("BOEM Wind fetch failed: %s", exc)

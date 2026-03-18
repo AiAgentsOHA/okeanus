@@ -3,7 +3,7 @@
 Employment data for fishing, aquaculture, maritime transport,
 and shipbuilding sectors across 189 countries.
 
-API: SDMX REST at ilostat.ilo.org.
+API: REST JSON at rplumber.ilo.org (columnar format).
 No auth required.
 """
 
@@ -17,9 +17,9 @@ from okeanus.adapters.base import BaseAdapter
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://www.ilo.org/sdmx/rest/data"
+BASE_URL = "https://rplumber.ilo.org/data/indicator/"
 
-# Key maritime employment indicators
+# Key maritime employment indicators (append _A for annual frequency)
 INDICATORS = {
     "EMP_TEMP_SEX_EC2_NB": "Employment by economic activity (ISIC Rev.4)",
     "EAR_XEES_SEX_EC2_NB": "Mean monthly earnings by economic activity",
@@ -71,98 +71,99 @@ class IloMaritimeAdapter(BaseAdapter):
             indicator: ILOSTAT indicator ID (default: EMP_TEMP_SEX_EC2_NB)
             country: ISO3 code (e.g. 'USA', 'NOR')
             isic: ISIC Rev.4 code for sector (default: A03 = fishing)
+            limit: max records (default: 500)
         """
         indicator = params.get("indicator", "EMP_TEMP_SEX_EC2_NB")
         country = params.get("country", "")
         isic_code = params.get("isic", "A03")
+        limit = params.get("limit", 500)
         year_start = time_start.year
         year_end = time_end.year
 
-        # Build SDMX key: freq.ref_area.source.sex.classif1.classif2
-        ref_area = country.upper() if country else ""
-        key = f"A.{ref_area}..T.EC2_{isic_code}."
+        # rplumber.ilo.org API uses indicator_id with _A suffix for annual
+        indicator_id = f"{indicator}_A"
 
-        url = f"{BASE_URL}/ILO,DF_{indicator}/{key}"
         query: dict[str, Any] = {
-            "startPeriod": str(year_start),
-            "endPeriod": str(year_end),
-            "format": "jsondata",
-            "detail": "dataonly",
+            "id": indicator_id,
+            "timefrom": str(year_start),
+            "timeto": str(year_end),
+            "format": "json",
         }
+        if country:
+            query["ref_area"] = country.upper()
 
         try:
-            resp = await self._request("GET", url, params=query)
+            resp = await self._request("GET", BASE_URL, params=query)
             data = resp.json()
         except Exception as exc:
             logger.error("ILO fetch %s failed: %s", indicator, exc)
             return []
 
-        observations: list[dict[str, Any]] = []
-
-        datasets = data.get("dataSets", [])
-        structure = data.get("structure", {})
-        dims = structure.get("dimensions", {}).get("series", [])
-        obs_dims = structure.get("dimensions", {}).get("observation", [])
-
-        # Map dimension indices to labels
-        dim_labels = {}
-        for dim in dims:
-            dim_id = dim.get("id", "")
-            values = dim.get("values", [])
-            dim_labels[dim_id] = {str(i): v.get("name", v.get("id", "")) for i, v in enumerate(values)}
-
-        # Time periods from observation dimension
-        time_values = {}
-        for dim in obs_dims:
-            if dim.get("id") == "TIME_PERIOD":
-                for i, v in enumerate(dim.get("values", [])):
-                    time_values[str(i)] = v.get("id", v.get("name", ""))
-
-        if not datasets:
+        if not isinstance(data, dict):
+            logger.warning("ILO %s: unexpected response type %s", indicator, type(data).__name__)
             return []
 
-        series = datasets[0].get("series", {})
-        for series_key, series_val in series.items():
-            # Parse series key to extract dimension values
-            key_parts = series_key.split(":")
-            ref_area_val = ""
-            for dim, idx in zip(dims, key_parts):
-                if dim.get("id") == "REF_AREA":
-                    values = dim.get("values", [])
-                    try:
-                        ref_area_val = values[int(idx)].get("id", "")
-                    except (IndexError, ValueError):
-                        pass
+        # Response is columnar: parallel arrays for each field
+        ref_areas = data.get("ref_area", [])
+        times = data.get("time", [])
+        values = data.get("obs_value", [])
+        classif1s = data.get("classif1", [])
+        sexes = data.get("sex", [])
 
-            for obs_key, obs_val in series_val.get("observations", {}).items():
-                if not obs_val:
-                    continue
+        n_records = len(values)
+        if n_records == 0:
+            return []
 
-                period = time_values.get(obs_key, "")
-                try:
-                    yr = int(period[:4])
-                    ts = datetime(yr, 1, 1)
-                    value = float(obs_val[0]) if isinstance(obs_val, list) else float(obs_val)
-                except (ValueError, TypeError, IndexError):
-                    continue
+        observations: list[dict[str, Any]] = []
 
-                observations.append({
-                    "obs_type": "economic",
-                    "timestamp": ts,
-                    "geometry": {"type": "Point", "coordinates": [0, 0]},
-                    "source_id": f"ilo-{indicator}-{ref_area_val}-{isic_code}-{yr}",
-                    "source_name": "ILO ILOSTAT",
-                    "quality_score": 0.90,
-                    "payload": {
-                        "indicator": indicator,
-                        "country": ref_area_val,
-                        "isic_code": isic_code,
-                        "sector_name": MARITIME_ISIC.get(isic_code, isic_code),
-                        "year": yr,
-                        "value": value,
-                        "sex": "Total",
-                    },
-                })
+        # Filter to maritime ISIC codes
+        isic_filter = f"EC2_ISIC4_{isic_code}" if not isic_code.startswith("EC2_") else isic_code
+
+        for i in range(n_records):
+            if len(observations) >= limit:
+                break
+
+            # Filter by ISIC classification if classif1 is available
+            classif = classif1s[i] if i < len(classif1s) else ""
+            if classif and isic_filter and isic_filter not in str(classif):
+                continue
+
+            # Filter by sex = total (SEX_T)
+            sex = sexes[i] if i < len(sexes) else ""
+            if sex and sex != "SEX_T":
+                continue
+
+            ref_area_val = ref_areas[i] if i < len(ref_areas) else ""
+            time_val = times[i] if i < len(times) else ""
+            obs_value = values[i] if i < len(values) else None
+
+            if obs_value is None:
+                continue
+
+            try:
+                yr = int(str(time_val)[:4])
+                ts = datetime(yr, 1, 1)
+                val = float(obs_value)
+            except (ValueError, TypeError):
+                continue
+
+            observations.append({
+                "obs_type": "economic",
+                "timestamp": ts,
+                "geometry": {"type": "Point", "coordinates": [0, 0]},
+                "source_id": f"ilo-{indicator}-{ref_area_val}-{isic_code}-{yr}",
+                "source_name": "ILO ILOSTAT",
+                "quality_score": 0.90,
+                "payload": {
+                    "indicator": indicator,
+                    "country": ref_area_val,
+                    "isic_code": isic_code,
+                    "sector_name": MARITIME_ISIC.get(isic_code, isic_code),
+                    "year": yr,
+                    "value": val,
+                    "sex": "Total",
+                },
+            })
 
         logger.info("ILO ILOSTAT returned %d observations", len(observations))
         return observations

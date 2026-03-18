@@ -6,19 +6,45 @@ S6 altimetry). Free registration required for download; catalog
 browsing is open. No auth required for search.
 
 Data source: https://dataspace.copernicus.eu/
+
+API migration (Nov 2025): The old ``catalogue.dataspace.copernicus.eu``
+STAC endpoint dropped Sentinel collections.  The replacement lives at
+``stac.dataspace.copernicus.eu/v1`` and uses lowercase collection IDs
+(e.g. ``sentinel-2-l2a`` instead of ``SENTINEL-2``).
 """
 
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from okeanus.adapters.base import BaseAdapter
 
 logger = logging.getLogger(__name__)
 
-STAC_URL = "https://catalogue.dataspace.copernicus.eu/stac/search"
+# New STAC v1 endpoint (replaces catalogue.dataspace.copernicus.eu).
+STAC_URL = "https://stac.dataspace.copernicus.eu/v1/search"
+
+# Mapping from legacy uppercase names to new STAC v1 collection IDs.
+_COLLECTION_MAP: dict[str, str] = {
+    "SENTINEL-1": "sentinel-1-grd",
+    "SENTINEL-2": "sentinel-2-l2a",
+    "SENTINEL-3": "sentinel-3-slstr-l2-wst",
+    "SENTINEL-5P": "sentinel-5p-l2-no2",
+    "SENTINEL-6": "sentinel-6",
+}
+
+
+def _fmt_utc(dt: datetime) -> str:
+    """Format *dt* as ``YYYY-MM-DDTHH:MM:SSZ``.
+
+    The STAC v1 endpoint rejects the ``+00:00Z`` double-suffix that
+    ``datetime.isoformat() + 'Z'`` would produce for tz-aware datetimes.
+    """
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 class CopernicusDataspaceAdapter(BaseAdapter):
@@ -49,25 +75,29 @@ class CopernicusDataspaceAdapter(BaseAdapter):
         """Search Copernicus STAC catalog for satellite scenes.
 
         Extra params:
-            collection: Sentinel collection (default 'SENTINEL-3')
-                Options: SENTINEL-1, SENTINEL-2, SENTINEL-3, SENTINEL-5P, SENTINEL-6
-            product_type: filter by product type (e.g. 'OL_2_WFR___' for ocean color)
+            collection: Sentinel collection (default 'SENTINEL-2')
+                Legacy names (SENTINEL-1 .. SENTINEL-6) are auto-mapped
+                to the new v1 IDs.  New-style IDs are also accepted.
+            product_type: filter by product type
             limit: max results (default 100)
         """
         w, s, e, n = bbox
         limit = params.get("limit", 100)
-        collection = params.get("collection", "SENTINEL-3")
+        collection = params.get("collection", "SENTINEL-2")
         product_type = params.get("product_type")
+
+        # Translate legacy uppercase names to new STAC v1 IDs.
+        resolved = _COLLECTION_MAP.get(collection.upper(), collection)
 
         body: dict[str, Any] = {
             "bbox": [w, s, e, n],
-            "datetime": f"{time_start.isoformat()}Z/{time_end.isoformat()}Z",
-            "collections": [collection],
+            "datetime": f"{_fmt_utc(time_start)}/{_fmt_utc(time_end)}",
+            "collections": [resolved],
             "limit": min(limit, 200),
         }
 
         if product_type:
-            body["filter"] = f"productType = '{product_type}'"
+            body["filter"] = f"productType = \'{product_type}\'"
 
         try:
             resp = await self._request(
@@ -117,8 +147,8 @@ class CopernicusDataspaceAdapter(BaseAdapter):
                 "source_name": "Copernicus Data Space",
                 "quality_score": 0.9,
                 "payload": {
-                    "collection": collection,
-                    "product_type": props.get("productType", ""),
+                    "collection": resolved,
+                    "product_type": props.get("productType", props.get("product:type", "")),
                     "title": props.get("title", ""),
                     "platform": props.get("platform", ""),
                     "instrument": props.get("instrument", ""),

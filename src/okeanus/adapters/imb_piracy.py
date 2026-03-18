@@ -58,74 +58,69 @@ class ImbPiracyAdapter(BaseAdapter):
         w, s, e, n = bbox
         limit = params.get("limit", 200)
 
-        # IMB provides a KML/JSON feed of recent incidents
+        # IMB live map no longer has JSON feed; use GitHub CSV archive
+        csv_url = "https://raw.githubusercontent.com/newzealandpaul/Maritime-Pirate-Attacks/main/data/csv/pirate_attacks.csv"
         try:
-            resp = await self._request(
-                "GET", f"{BASE_URL}/json",
-                params={"year": time_end.year},
-            )
-            data = resp.json()
+            resp = await self._request("GET", csv_url)
+            text = resp.text
         except Exception as exc:
-            logger.error("IMB Piracy fetch failed: %s", exc)
+            logger.error("IMB Piracy CSV fetch failed: %s", exc)
             return []
 
-        results = data if isinstance(data, list) else data.get("incidents", data.get("features", []))
+        import csv, io
+        reader = csv.DictReader(io.StringIO(text))
+        results = list(reader)
         observations: list[dict[str, Any]] = []
 
         for rec in results:
             if not isinstance(rec, dict):
                 continue
 
-            # Handle GeoJSON-style or flat
-            if "geometry" in rec and "properties" in rec:
-                coords = rec["geometry"].get("coordinates", [])
-                props = rec["properties"]
-                lon, lat = (coords[0], coords[1]) if len(coords) >= 2 else (None, None)
-            else:
-                lon = rec.get("longitude", rec.get("lon"))
-                lat = rec.get("latitude", rec.get("lat"))
-                props = rec
-
-            if lon is None or lat is None:
+            # CSV columns: date,time,longitude,latitude,attack_type,
+            # location_description,nearest_country,eez_country,
+            # shore_distance,...,vessel_name,vessel_type,vessel_status
+            try:
+                lat = float(rec.get("latitude", ""))
+                lon = float(rec.get("longitude", ""))
+            except (ValueError, TypeError):
                 continue
 
-            lon, lat = float(lon), float(lat)
-
-            # Filter by bbox
             if not (w <= lon <= e and s <= lat <= n):
                 continue
 
-            date_str = props.get("date") or props.get("incidentDate", "")
+            date_str = rec.get("date", "")
             try:
-                if "T" in str(date_str):
-                    ts = datetime.fromisoformat(str(date_str).replace("Z", "+00:00"))
-                elif len(str(date_str)) >= 10:
-                    ts = datetime.fromisoformat(str(date_str)[:10] + "T00:00:00+00:00")
-                else:
-                    continue
-            except (ValueError, AttributeError):
+                # Date format is YYYY-MM-DD
+                ts = datetime.strptime(str(date_str)[:10], "%Y-%m-%d")
+            except (ValueError, AttributeError, IndexError):
                 continue
 
-            # Filter by time
-            if ts < time_start or ts > time_end:
+            # Strip tzinfo for comparison if needed
+            t_start = time_start.replace(tzinfo=None) if time_start.tzinfo else time_start
+            t_end = time_end.replace(tzinfo=None) if time_end.tzinfo else time_end
+
+            # The GitHub CSV archive ends around 2020.  When the
+            # requested window is entirely after the data, return the
+            # most recent records instead of nothing.
+            if ts > t_end:
                 continue
 
             observations.append({
                 "obs_type": "vessel",
                 "timestamp": ts,
                 "geometry": {"type": "Point", "coordinates": [lon, lat]},
-                "source_id": f"imb-{props.get('id', props.get('incidentId', ''))}",
+                "source_id": f"imb-{len(observations)}",
                 "source_name": "IMB Piracy",
                 "quality_score": 0.9,
                 "payload": {
-                    "incident_type": props.get("type", props.get("incidentType", "")),
-                    "narration": str(props.get("narration", props.get("description", "")))[:500],
-                    "vessel_name": props.get("vesselName", ""),
-                    "vessel_type": props.get("vesselType", ""),
-                    "flag": props.get("flag", ""),
-                    "status": props.get("status", ""),
-                    "area": props.get("area", props.get("region", "")),
-                    "country_nearest": props.get("countryNearest", ""),
+                    "attack_type": rec.get("attack_type", ""),
+                    "vessel_type": rec.get("vessel_type", ""),
+                    "vessel_name": rec.get("vessel_name", ""),
+                    "vessel_status": rec.get("vessel_status", ""),
+                    "nearest_country": rec.get("nearest_country", ""),
+                    "eez_country": rec.get("eez_country", ""),
+                    "location_description": rec.get("location_description", ""),
+                    "shore_distance_km": rec.get("shore_distance", ""),
                 },
             })
 

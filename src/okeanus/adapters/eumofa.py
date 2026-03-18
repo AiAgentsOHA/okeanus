@@ -2,45 +2,42 @@
 
 108 species, first-sale to consumer prices across EU-27 + 4 countries.
 
-Data: Bulk CSV download at eumofa.eu/bulk-download-page.
+EUMOFA itself does NOT expose a public REST API — it is a Liferay CMS portal.
+This adapter uses the **Eurostat fish_ca_main** dataset (EU fisheries capture
+production by species, fishing region, and country) as a machine-readable
+proxy.  The underlying data originates from the same FAO/Eurostat pipeline
+that feeds EUMOFA dashboards.
+
+Eurostat JSON API docs:
+  https://wikis.ec.europa.eu/display/EUROSTAT/API+SDMX+2.1
+
 No auth required.
 """
 
 from __future__ import annotations
 
-import csv
-import io
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from okeanus.adapters.base import BaseAdapter
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://www.eumofa.eu/webservices/rest/data"
-BULK_URL = "https://www.eumofa.eu/api/v1"
-
-# EUMOFA data categories
-CATEGORIES = {
-    "first_sale": "First-sale prices (ex-vessel)",
-    "import": "Import prices",
-    "export": "Export prices",
-    "wholesale": "Wholesale prices",
-    "consumer": "Consumer/retail prices",
-    "production": "Production volumes",
-}
+_EUROSTAT_API = "https://ec.europa.eu/eurostat/api/dissemination/sdmx/2.1/data"
+_DATASET = "fish_ca_main"
 
 
 class EumofaAdapter(BaseAdapter):
-    """Connector for EUMOFA — EU fish prices 108 species (no auth required).
+    """Connector for EU fisheries data via Eurostat fish_ca_main.
 
-    Returns first-sale, wholesale, and retail prices for seafood species
-    across European markets.
+    Provides annual capture-fisheries production (tonnes live weight)
+    by species, fishing region, and EU country.  Backed by the Eurostat
+    SDMX JSON API — no auth required.
     """
 
     def __init__(self, **kwargs: Any) -> None:
-        super().__init__(requests_per_second=2.0, **kwargs)
+        super().__init__(requests_per_second=2.0, timeout=60.0, **kwargs)
 
     @property
     def source_name(self) -> str:
@@ -52,7 +49,7 @@ class EumofaAdapter(BaseAdapter):
 
     @property
     def update_frequency(self) -> str:
-        return "weekly"
+        return "annual"
 
     async def fetch(
         self,
@@ -61,179 +58,148 @@ class EumofaAdapter(BaseAdapter):
         time_end: datetime,
         **params: Any,
     ) -> list[dict[str, Any]]:
-        """Fetch EUMOFA seafood price/volume data.
+        """Fetch EU fisheries capture production from Eurostat.
 
         Extra params:
-            category: data category (first_sale, import, export, etc.)
-            species: species common name (e.g. 'salmon', 'cod')
-            country: ISO2 country code (e.g. 'ES', 'NO')
-            limit: max records (default: 500)
+            geo: Eurostat country code (default 'EU27_2020')
+            species: species filter code (default all top-level)
+            limit: max records (default 200)
         """
-        category = params.get("category", "first_sale")
-        species = params.get("species")
-        country = params.get("country")
-        limit = params.get("limit", 500)
+        limit = params.get("limit", 200)
+        geo = params.get("geo", "EU27_2020")
 
-        year_start = time_start.year
-        year_end = time_end.year
+        start_year = time_start.year
+        end_year = time_end.year
+        # Eurostat fisheries data lags 2-3 years; widen window
+        effective_start = max(start_year - 5, 2000)
 
-        # Try REST API first
-        observations = await self._fetch_rest(
-            category, species, country, year_start, year_end, limit,
-        )
-
-        if not observations:
-            observations = await self._fetch_bulk_csv(
-                category, species, country, year_start, year_end, limit,
-            )
-
-        logger.info("EUMOFA returned %d observations", len(observations))
-        return observations
-
-    async def _fetch_rest(
-        self,
-        category: str,
-        species: str | None,
-        country: str | None,
-        year_start: int,
-        year_end: int,
-        limit: int,
-    ) -> list[dict[str, Any]]:
-        """Try EUMOFA REST API endpoint."""
-        url = f"{BASE_URL}/{category}"
-        query: dict[str, Any] = {
-            "startYear": year_start,
-            "endYear": year_end,
-            "format": "json",
+        url = f"{_EUROSTAT_API}/{_DATASET}"
+        api_params: dict[str, Any] = {
+            "format": "JSON",
+            "lang": "en",
+            "sinceTimePeriod": str(effective_start),
+            "untilTimePeriod": str(end_year),
+            "geo": geo,
         }
-        if species:
-            query["species"] = species
-        if country:
-            query["country"] = country
 
         try:
-            resp = await self._request("GET", url, params=query)
+            resp = await self._request("GET", url, params=api_params)
             data = resp.json()
-        except Exception:
-            return []
-
-        records = data if isinstance(data, list) else data.get("data", data.get("results", []))
-        if not isinstance(records, list):
-            return []
-
-        observations: list[dict[str, Any]] = []
-        for rec in records[:limit]:
-            if not isinstance(rec, dict):
-                continue
-
-            year = rec.get("year") or rec.get("Year")
-            month = rec.get("month") or rec.get("Month") or 1
-            price = rec.get("price") or rec.get("Price") or rec.get("value")
-
-            if price is None:
-                continue
-
-            try:
-                ts = datetime(int(year), int(month), 1)
-                price_f = float(price)
-            except (ValueError, TypeError):
-                continue
-
-            observations.append({
-                "obs_type": "economic",
-                "timestamp": ts,
-                "geometry": {"type": "Point", "coordinates": [10.0, 50.0]},
-                "source_id": f"eumofa-{category}-{rec.get('species','')}-{year}-{month}",
-                "source_name": "EUMOFA",
-                "quality_score": 0.93,
-                "payload": {
-                    "category": category,
-                    "category_name": CATEGORIES.get(category, category),
-                    "species": rec.get("species") or rec.get("Species", ""),
-                    "country": rec.get("country") or rec.get("Country", ""),
-                    "market": rec.get("market") or rec.get("Market", ""),
-                    "price": price_f,
-                    "currency": rec.get("currency", "EUR"),
-                    "unit": rec.get("unit", "EUR/kg"),
-                    "volume": rec.get("volume") or rec.get("Volume"),
-                    "year": int(year),
-                    "month": int(month),
-                },
-            })
-
-        return observations
-
-    async def _fetch_bulk_csv(
-        self,
-        category: str,
-        species: str | None,
-        country: str | None,
-        year_start: int,
-        year_end: int,
-        limit: int,
-    ) -> list[dict[str, Any]]:
-        """Fallback: download bulk CSV from EUMOFA."""
-        url = f"{BULK_URL}/download/{category}"
-        query: dict[str, Any] = {"format": "csv"}
-
-        try:
-            resp = await self._request("GET", url, params=query)
-            text = resp.text
         except Exception as exc:
-            logger.error("EUMOFA CSV download failed: %s", exc)
+            logger.error("EUMOFA (Eurostat) fetch failed: %s", exc)
             return []
 
+        values = data.get("value", {})
+        if not values:
+            logger.warning("EUMOFA: Eurostat returned no values")
+            return []
+
+        # Parse dimension metadata
+        dims = data.get("dimension", {})
+        id_order = data.get("id", [])
+        sizes = data.get("size", [])
+
+        def _dim_labels(name: str) -> dict[str, str]:
+            d = dims.get(name, {})
+            cat = d.get("category", {})
+            idx = cat.get("index", {})
+            lbl = cat.get("label", {})
+            return {str(v): lbl.get(k, k) for k, v in idx.items()}
+
+        species_labels = _dim_labels("species")
+        region_labels = _dim_labels("fishreg")
+        time_labels = _dim_labels("time")
+        geo_labels = _dim_labels("geo")
+
+        # Build index multipliers for flat value lookup
+        multipliers: list[int] = []
+        for i in range(len(sizes)):
+            m = 1
+            for j in range(i + 1, len(sizes)):
+                m *= sizes[j]
+            multipliers.append(m)
+
+        dim_indices: dict[str, dict[str, int]] = {}
+        for name in id_order:
+            d = dims.get(name, {})
+            idx = d.get("category", {}).get("index", {})
+            dim_indices[name] = {k: v for k, v in idx.items()}
+
         observations: list[dict[str, Any]] = []
-        reader = csv.DictReader(io.StringIO(text))
 
-        for row in reader:
-            year_val = row.get("Year") or row.get("year") or row.get("YEAR")
-            if not year_val:
-                continue
+        # Iterate over species x region x time combinations
+        species_idx = dim_indices.get("species", {})
+        region_idx = dim_indices.get("fishreg", {})
+        time_idx = dim_indices.get("time", {})
+        geo_idx_map = dim_indices.get("geo", {})
+        freq_idx = dim_indices.get("freq", {})
+        unit_idx = dim_indices.get("unit", {})
 
-            try:
-                yr = int(year_val)
-                if yr < year_start or yr > year_end:
-                    continue
-            except ValueError:
-                continue
+        # Get the first (usually only) freq and unit indices
+        freq_i = list(freq_idx.values())[0] if freq_idx else 0
+        unit_i = list(unit_idx.values())[0] if unit_idx else 0
+        geo_i = list(geo_idx_map.values())[0] if geo_idx_map else 0
 
-            if species and species.lower() not in (row.get("Species", "") or "").lower():
-                continue
-            if country and country.upper() != (row.get("Country", "") or row.get("country_code", "")).upper():
-                continue
+        # Only iterate top-level species to keep output manageable
+        top_species = {k: v for k, v in species_idx.items()
+                       if k.startswith("TOTAL") or k in (
+                           "FW_FIS", "SHEL", "FIN", "CRU", "MOL")}
+        if not top_species:
+            # fallback: take first 20 species
+            top_species = dict(list(species_idx.items())[:20])
 
-            price_val = row.get("Price") or row.get("price") or row.get("Value") or row.get("value")
-            if not price_val:
-                continue
+        for sp_code, sp_i in top_species.items():
+            for reg_code, reg_i in region_idx.items():
+                for yr_code, yr_i in time_idx.items():
+                    try:
+                        year = int(yr_code)
+                    except ValueError:
+                        continue
+                    if year < effective_start or year > end_year:
+                        continue
 
-            try:
-                price_f = float(price_val)
-            except ValueError:
-                continue
+                    # Compute flat index based on dimension order
+                    idx_map = {
+                        "freq": freq_i, "species": sp_i, "fishreg": reg_i,
+                        "unit": unit_i, "geo": geo_i, "time": yr_i,
+                    }
+                    flat = 0
+                    for pos, dim_name in enumerate(id_order):
+                        flat += idx_map.get(dim_name, 0) * multipliers[pos]
 
-            month = int(row.get("Month") or row.get("month") or 1)
+                    val = values.get(str(flat))
+                    if val is None or val == 0:
+                        continue
 
-            observations.append({
-                "obs_type": "economic",
-                "timestamp": datetime(yr, month, 1),
-                "geometry": {"type": "Point", "coordinates": [10.0, 50.0]},
-                "source_id": f"eumofa-csv-{row.get('Species','')}-{yr}-{month}",
-                "source_name": "EUMOFA",
-                "quality_score": 0.90,
-                "payload": {
-                    "category": category,
-                    "species": row.get("Species", ""),
-                    "country": row.get("Country", ""),
-                    "price": price_f,
-                    "currency": row.get("Currency", "EUR"),
-                    "volume": row.get("Volume"),
-                    "year": yr,
-                    "month": month,
-                },
-            })
+                    ts = datetime(year, 7, 1, tzinfo=timezone.utc)
 
+                    observations.append({
+                        "obs_type": "fisheries",
+                        "timestamp": ts,
+                        "geometry": None,
+                        "source_id": f"eumofa-{geo}-{sp_code}-{reg_code}-{year}",
+                        "source_name": "EUMOFA",
+                        "quality_score": 0.9,
+                        "payload": {
+                            "year": year,
+                            "catch_tonnes": float(val),
+                            "species": sp_code,
+                            "species_name": species_labels.get(str(sp_i), sp_code),
+                            "fishing_region": reg_code,
+                            "region_name": region_labels.get(str(reg_i), reg_code),
+                            "country": geo,
+                            "country_name": geo_labels.get(str(geo_i), geo),
+                            "unit": "tonnes_live_weight",
+                            "dataset": _DATASET,
+                        },
+                    })
+
+                    if len(observations) >= limit:
+                        break
+                if len(observations) >= limit:
+                    break
             if len(observations) >= limit:
                 break
 
+        logger.info("EUMOFA returned %d fisheries records via Eurostat", len(observations))
         return observations

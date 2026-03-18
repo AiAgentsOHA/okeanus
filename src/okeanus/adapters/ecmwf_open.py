@@ -1,33 +1,54 @@
-"""ECMWF Open Data adapter — global weather and wave forecasts.
+"""ECMWF Open Data adapter -- global weather and wave forecasts.
 
-Free access to ECMWF's HRES/ENS deterministic and ensemble forecasts
-via the ``ecmwf-opendata`` Python package. No auth required.
+Free access to ECMWF IFS model forecasts via the Open-Meteo API which
+serves ECMWF data as simple JSON. No auth required.
 
-Requires:  pip install ecmwf-opendata
-Docs:      https://github.com/ecmwf/ecmwf-opendata
+The original adapter required the ecmwf-opendata + cfgrib packages.
+This version uses the Open-Meteo API (api.open-meteo.com) which
+redistributes ECMWF IFS 0.25-degree data over a lightweight REST API.
+
+Docs: https://open-meteo.com/en/docs/ecmwf-api
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from okeanus.adapters.base import BaseAdapter
 
 logger = logging.getLogger(__name__)
 
+# Open-Meteo ECMWF forecast endpoint (serves ECMWF IFS 0.25deg data)
+FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
+MARINE_URL = "https://marine-api.open-meteo.com/v1/marine"
+
+# Map friendly names to Open-Meteo variable codes
+_WEATHER_VARS = {
+    "wind": "wind_speed_10m,wind_direction_10m,wind_gusts_10m",
+    "pressure": "pressure_msl",
+    "temperature": "temperature_2m",
+    "precipitation": "precipitation",
+}
+
+_MARINE_VARS = {
+    "wave": "wave_height,wave_period,wave_direction",
+    "swell": "swell_wave_height,swell_wave_period,swell_wave_direction",
+    "sst": "ocean_current_velocity,ocean_current_direction",
+}
+
 
 class EcmwfOpenAdapter(BaseAdapter):
-    """Connector for ECMWF open forecast data (no auth required).
+    """Connector for ECMWF forecast data via Open-Meteo (no auth required).
 
-    Downloads GRIB2 forecast fields and converts surface grid points
-    to observation dicts. Requires ``ecmwf-opendata`` and ``cfgrib``.
+    Returns hourly forecast grid points as observation dicts. Uses the
+    Open-Meteo API which serves ECMWF IFS 0.25-degree deterministic
+    forecasts as simple JSON.
     """
 
     def __init__(self, **kwargs: Any) -> None:
-        super().__init__(requests_per_second=0.5, timeout=120.0, **kwargs)
+        super().__init__(requests_per_second=1.0, timeout=30.0, **kwargs)
 
     @property
     def source_name(self) -> str:
@@ -35,99 +56,11 @@ class EcmwfOpenAdapter(BaseAdapter):
 
     @property
     def source_url(self) -> str:
-        return "https://data.ecmwf.int/forecasts/"
+        return "https://open-meteo.com/en/docs/ecmwf-api"
 
     @property
     def update_frequency(self) -> str:
         return "6-hourly"
-
-    def _fetch_sync(
-        self,
-        bbox: tuple[float, float, float, float],
-        time_start: datetime,
-        variable: str,
-        max_records: int,
-    ) -> list[dict[str, Any]]:
-        """Synchronous ECMWF fetch — runs in executor."""
-        try:
-            from ecmwf.opendata import Client
-        except ImportError:
-            logger.error("ecmwf-opendata not installed: pip install ecmwf-opendata")
-            return []
-
-        w, s, e, n = bbox
-
-        client = Client(source="ecmwf")
-
-        # Map friendly names to ECMWF parameter codes
-        param_map = {
-            "wind": "10u/10v",
-            "wave": "swh/mwp/mwd",
-            "pressure": "msl",
-            "temperature": "2t",
-            "sst": "sst",
-            "precipitation": "tp",
-        }
-        param = param_map.get(variable, variable)
-
-        try:
-            import tempfile
-            with tempfile.NamedTemporaryFile(suffix=".grib2") as tmp:
-                client.retrieve(
-                    step=0,
-                    type="fc",
-                    param=param,
-                    target=tmp.name,
-                    area=[n, w, s, e],  # ECMWF uses N/W/S/E
-                )
-
-                # Parse GRIB2 with cfgrib + xarray
-                try:
-                    import xarray as xr
-                    ds = xr.open_dataset(tmp.name, engine="cfgrib")
-                except ImportError:
-                    logger.error("cfgrib not installed: pip install cfgrib")
-                    return []
-
-                # Convert grid to observation dicts
-                observations: list[dict[str, Any]] = []
-                for var_name in ds.data_vars:
-                    da = ds[var_name].compute()
-                    df = da.to_dataframe().reset_index().dropna(subset=[var_name])
-
-                    if len(df) > max_records:
-                        df = df.sample(n=max_records, random_state=42)
-
-                    for _, row in df.iterrows():
-                        lon = float(row.get("longitude", 0))
-                        lat = float(row.get("latitude", 0))
-                        ts = row.get("time", time_start)
-                        if hasattr(ts, "to_pydatetime"):
-                            ts = ts.to_pydatetime()
-
-                        observations.append({
-                            "obs_type": "physical",
-                            "timestamp": ts,
-                            "geometry": {"type": "Point", "coordinates": [lon, lat]},
-                            "source_id": f"ecmwf-{var_name}-{lat:.2f}-{lon:.2f}",
-                            "source_name": "ECMWF Open Data",
-                            "quality_score": 0.95,
-                            "payload": {
-                                "parameter": var_name,
-                                "value": float(row[var_name]),
-                                "step_hours": int(row.get("step", 0)) if "step" in row.index else 0,
-                                "forecast_type": "HRES",
-                            },
-                        })
-
-                    if len(observations) >= max_records:
-                        break
-
-                return observations[:max_records]
-
-        except Exception as exc:
-            logger.error("ECMWF fetch failed: %s", exc)
-            return []
 
     async def fetch(
         self,
@@ -136,19 +69,136 @@ class EcmwfOpenAdapter(BaseAdapter):
         time_end: datetime,
         **params: Any,
     ) -> list[dict[str, Any]]:
-        """Fetch ECMWF forecast data within bbox.
+        """Fetch ECMWF forecast data within bbox via Open-Meteo.
 
         Extra params:
-            variable: 'wind', 'wave', 'pressure', 'temperature', 'sst',
-                      'precipitation', or raw ECMWF param code
+            variable: 'wind' (default), 'wave', 'pressure', 'temperature',
+                      'sst', 'precipitation', 'swell'
+            limit: Max observations to return (default 500)
         """
         variable = params.get("variable", "wind")
         limit = params.get("limit", 500)
 
-        loop = asyncio.get_event_loop()
-        results = await loop.run_in_executor(
-            None, self._fetch_sync, bbox, time_start, variable, limit,
-        )
+        w, s, e, n = bbox
 
-        logger.info("ECMWF returned %d forecast points", len(results))
-        return results
+        # Generate a grid of points within the bbox (0.5-degree spacing)
+        step = 0.5
+        lats = []
+        lons = []
+        lat = s
+        while lat <= n:
+            lon = w
+            while lon <= e:
+                lats.append(round(lat, 2))
+                lons.append(round(lon, 2))
+                lon += step
+            lat += step
+
+        # Cap the number of grid points to avoid excessive requests
+        max_points = min(len(lats), limit, 50)
+        lats = lats[:max_points]
+        lons = lons[:max_points]
+
+        if not lats:
+            return []
+
+        # Determine if this is a marine or weather variable
+        is_marine = variable in _MARINE_VARS
+
+        if is_marine:
+            url = MARINE_URL
+            hourly_vars = _MARINE_VARS.get(variable, _MARINE_VARS["wave"])
+        else:
+            url = FORECAST_URL
+            hourly_vars = _WEATHER_VARS.get(variable, _WEATHER_VARS["wind"])
+
+        observations: list[dict[str, Any]] = []
+
+        # Open-Meteo supports comma-separated lat/lon for multi-point queries
+        # but only up to ~50 points. Process in batches.
+        batch_size = 50
+        for i in range(0, len(lats), batch_size):
+            batch_lats = lats[i : i + batch_size]
+            batch_lons = lons[i : i + batch_size]
+
+            api_params: dict[str, Any] = {
+                "latitude": ",".join(str(x) for x in batch_lats),
+                "longitude": ",".join(str(x) for x in batch_lons),
+                "hourly": hourly_vars,
+                "forecast_days": 1,
+            }
+
+            if not is_marine:
+                api_params["models"] = "ecmwf_ifs025"
+
+            try:
+                resp = await self._request("GET", url, params=api_params)
+                data = resp.json()
+            except Exception as exc:
+                logger.error("ECMWF/Open-Meteo fetch failed: %s", exc)
+                continue
+
+            # Handle single-point vs multi-point response format
+            if isinstance(data, list):
+                point_results = data
+            elif isinstance(data, dict) and "hourly" in data:
+                point_results = [data]
+            else:
+                continue
+
+            for point_data in point_results:
+                if not isinstance(point_data, dict):
+                    continue
+
+                pt_lat = point_data.get("latitude", 0)
+                pt_lon = point_data.get("longitude", 0)
+                hourly = point_data.get("hourly", {})
+
+                times = hourly.get("time", [])
+                if not times:
+                    continue
+
+                # Get the first forecast timestep values
+                for t_idx, time_str in enumerate(times[:6]):
+                    if len(observations) >= limit:
+                        break
+
+                    try:
+                        ts = datetime.fromisoformat(time_str).replace(
+                            tzinfo=timezone.utc
+                        )
+                    except (ValueError, AttributeError):
+                        ts = time_start
+
+                    payload: dict[str, Any] = {
+                        "variable": variable,
+                        "forecast_model": "ECMWF IFS 0.25deg",
+                        "forecast_type": "HRES",
+                    }
+
+                    # Extract all variable values for this timestep
+                    for var_name in hourly_vars.split(","):
+                        values = hourly.get(var_name, [])
+                        if t_idx < len(values) and values[t_idx] is not None:
+                            payload[var_name] = values[t_idx]
+
+                    observations.append(
+                        {
+                            "obs_type": "physical",
+                            "timestamp": ts,
+                            "geometry": {
+                                "type": "Point",
+                                "coordinates": [pt_lon, pt_lat],
+                            },
+                            "source_id": f"ecmwf-{variable}-{pt_lat:.2f}-{pt_lon:.2f}-{t_idx}",
+                            "source_name": "ECMWF Open Data (via Open-Meteo)",
+                            "quality_score": 0.95,
+                            "payload": payload,
+                        }
+                    )
+
+            if len(observations) >= limit:
+                break
+
+        logger.info("ECMWF returned %d forecast points", len(observations))
+        return observations[:limit]

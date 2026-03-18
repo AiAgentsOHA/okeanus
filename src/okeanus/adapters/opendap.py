@@ -101,7 +101,7 @@ class OpendapAdapter(BaseAdapter):
             return []
 
         try:
-            ds = xr.open_dataset(url, engine="netcdf4")
+            ds = xr.open_dataset(url, engine="netcdf4", decode_times=False)
         except Exception as exc:
             logger.error("OPeNDAP open failed for %s: %s", url, exc)
             return []
@@ -115,12 +115,11 @@ class OpendapAdapter(BaseAdapter):
                     break
 
             if time_dim:
-                ds = ds.sel(
-                    {time_dim: slice(
-                        time_start.strftime("%Y-%m-%d"),
-                        time_end.strftime("%Y-%m-%d"),
-                    )},
-                )
+                # With decode_times=False, time coord is raw numbers;
+                # just take the last few timesteps instead of date slicing
+                n_times = ds.sizes.get(time_dim, 0)
+                if n_times > 5:
+                    ds = ds.isel({time_dim: slice(-5, None)})
 
             # Subset by lat/lon
             lat_dim = None
@@ -169,11 +168,7 @@ class OpendapAdapter(BaseAdapter):
                     lon = float(row.get(lon_dim or "lon", row.get("longitude", 0)))
                     lat = float(row.get(lat_dim or "lat", row.get("latitude", 0)))
 
-                    ts_val = row.get(time_dim or "time")
-                    if ts_val is not None and hasattr(ts_val, "to_pydatetime"):
-                        ts = ts_val.to_pydatetime()
-                    else:
-                        ts = time_start
+                    ts = time_start  # decode_times=False, use query time
 
                     observations.append({
                         "obs_type": "physical",

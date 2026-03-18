@@ -2,14 +2,19 @@
 
 SeaBASS (SeaWiFS Bio-optical Archive and Storage System) hosts in situ
 bio-optical and biogeochemical measurements used for satellite ocean color
-validation. No auth required for search; download may require Earthdata.
+validation. No auth required for archive browsing.
 
 Data source: https://seabass.gsfc.nasa.gov/
+
+Note: SeaBASS has no public REST/JSON API. The search form requires
+JavaScript execution. This adapter scrapes the public archive listing
+to enumerate available experiments/cruises.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
 from typing import Any
 
@@ -17,14 +22,14 @@ from okeanus.adapters.base import BaseAdapter
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://seabass.gsfc.nasa.gov/api/file_search"
+ARCHIVE_URL = "https://seabass.gsfc.nasa.gov/archive/"
 
 
 class SeaBassAdapter(BaseAdapter):
-    """Connector for NASA SeaBASS bio-optical archive (no auth for search)."""
+    """Connector for NASA SeaBASS bio-optical archive (scrapes archive listing)."""
 
     def __init__(self, **kwargs: Any) -> None:
-        super().__init__(requests_per_second=2.0, **kwargs)
+        super().__init__(requests_per_second=1.0, timeout=60.0, **kwargs)
 
     @property
     def source_name(self) -> str:
@@ -45,80 +50,46 @@ class SeaBassAdapter(BaseAdapter):
         time_end: datetime,
         **params: Any,
     ) -> list[dict[str, Any]]:
-        """Search SeaBASS for bio-optical data within bbox and time range.
+        """Scrape SeaBASS archive listing for experiment/cruise catalog.
+
+        Returns experiment-level records from the public archive directory.
+        Individual file search requires the SeaBASS web UI (JS-driven).
 
         Extra params:
-            measurement: filter by measurement type (e.g. 'Rrs', 'chlor_a', 'aph')
-            limit: max records (default 500)
+            limit: max records (default 200)
         """
-        w, s, e, n = bbox
-        limit = params.get("limit", 500)
-        measurement = params.get("measurement")
-
-        api_params: dict[str, Any] = {
-            "sdate": time_start.strftime("%Y%m%d"),
-            "edate": time_end.strftime("%Y%m%d"),
-            "slat": s,
-            "elat": n,
-            "slon": w,
-            "elon": e,
-            "results_as": "search",
-        }
-
-        if measurement:
-            api_params["search"] = measurement
+        limit = params.get("limit", 200)
 
         try:
-            resp = await self._request("GET", BASE_URL, params=api_params)
-            data = resp.json()
+            resp = await self._request("GET", ARCHIVE_URL)
+            html = resp.text
         except Exception as exc:
-            logger.error("SeaBASS fetch failed: %s", exc)
+            logger.error("SeaBASS archive fetch failed: %s", exc)
             return []
 
-        results = data if isinstance(data, list) else data.get("results", [])
-        if not isinstance(results, list):
-            results = []
+        # Parse experiment directories from the archive listing
+        # Links look like: href="/archive/AWI" (no trailing slash)
+        experiments = re.findall(r'href="/archive/([A-Za-z0-9_][^"]*)"', html)
 
         observations: list[dict[str, Any]] = []
 
-        for rec in results[:limit]:
-            if not isinstance(rec, dict):
+        for exp_name in experiments[:limit]:
+            if exp_name.startswith(".") or exp_name in ("css", "js", "images"):
                 continue
-
-            lon = rec.get("lon", rec.get("longitude"))
-            lat = rec.get("lat", rec.get("latitude"))
-            if lon is None or lat is None:
-                continue
-
-            try:
-                lon, lat = float(lon), float(lat)
-            except (ValueError, TypeError):
-                continue
-
-            date_str = rec.get("date", rec.get("start_date", ""))
-            try:
-                ts = datetime.strptime(str(date_str), "%Y%m%d") if date_str else time_start
-            except ValueError:
-                ts = time_start
 
             observations.append({
                 "obs_type": "biological",
-                "timestamp": ts,
-                "geometry": {"type": "Point", "coordinates": [lon, lat]},
-                "source_id": f"seabass-{rec.get('filename', rec.get('id', ''))}",
+                "timestamp": time_start,
+                "geometry": None,
+                "source_id": f"seabass-exp-{exp_name}",
                 "source_name": "NASA SeaBASS",
-                "quality_score": 0.9,
+                "quality_score": 0.7,
                 "payload": {
-                    "filename": rec.get("filename", ""),
-                    "experiment": rec.get("experiment", ""),
-                    "cruise": rec.get("cruise", ""),
-                    "station": rec.get("station", ""),
-                    "water_depth_m": rec.get("water_depth"),
-                    "measurements": rec.get("measurements", rec.get("fields", "")),
-                    "pi": rec.get("investigators", rec.get("pi", "")),
-                    "affiliations": rec.get("affiliations", ""),
+                    "experiment": exp_name,
+                    "archive_url": f"{ARCHIVE_URL}{exp_name}/",
+                    "note": "Experiment-level catalog entry; use SeaBASS web UI for file-level search",
                 },
             })
 
-        logger.info("SeaBASS returned %d records", len(observations))
+        logger.info("SeaBASS returned %d experiment records", len(observations))
         return observations

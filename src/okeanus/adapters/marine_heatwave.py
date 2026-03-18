@@ -118,28 +118,82 @@ class MarineHeatwaveAdapter(BaseAdapter):
             return []
 
         w, s, e, n = bbox
+
+        # Clamp to reasonable region for global queries
+        if (e - w) > 60 or (n - s) > 60:
+            w, s, e, n = -80, 25, -60, 45
+
         # Use centroid for single-point time series
         lon = (w + e) / 2
         lat = (s + n) / 2
 
-        # Fetch SST from OISST via ERDDAP
-        ts_start = time_start.strftime("%Y-%m-%dT00:00:00Z")
-        ts_end = time_end.strftime("%Y-%m-%dT00:00:00Z")
+        # Need at least 90 days for meaningful MHW detection; clamp to 6 months max
+        from datetime import timedelta, timezone as _tz
+        max_window = timedelta(days=180)
+        if (time_end - time_start) > max_window:
+            time_start = time_end - max_window
 
-        url = (
-            f"https://coastwatch.pfeg.noaa.gov/erddap/griddap/ncdcOisst21Agg_LonPM180.csv"
-            f"?sst[({ts_start}):1:({ts_end})]"
-            f"[({lat}):1:({lat})]"
-            f"[({lon}):1:({lon})]"
-        )
+        # SST datasets have processing lags (MUR ~3 days, OISST ~17 days).
+        # We build per-mirror queries with appropriate lag applied.
+        _now = datetime.now(_tz.utc)
 
-        try:
-            import httpx
-            resp = httpx.get(url, timeout=60.0)
-            resp.raise_for_status()
-            lines = resp.text.strip().split("\n")
-        except Exception as exc:
-            logger.error("SST fetch for MHW failed: %s", exc)
+        def _clamped(te: datetime, lag_days: int) -> tuple[datetime, datetime]:
+            """Return (start, end) clamped by lag."""
+            lag = timedelta(days=lag_days)
+            end = min(te, _now - lag)
+            start = time_start
+            if start >= end:
+                start = end - timedelta(days=90)
+            return start, end
+
+        import httpx
+
+        # Try MUR SST first (higher res, smaller lag), then OISST as fallback.
+        # Use upwell.pfeg.noaa.gov as primary (more reliable), coastwatch as backup.
+        _sst_sources = [
+            ("upwell.pfeg.noaa.gov/jplMURSST41", 3,
+             lambda s, e: (
+                 "https://upwell.pfeg.noaa.gov/erddap/griddap/jplMURSST41.csv"
+                 f"?analysed_sst[({s.strftime('%Y-%m-%dT09:00:00Z')}):1:({e.strftime('%Y-%m-%dT09:00:00Z')})]"
+                 f"[({lat}):1:({lat})][({lon}):1:({lon})]"
+             )),
+            ("coastwatch.pfeg.noaa.gov/jplMURSST41", 3,
+             lambda s, e: (
+                 "https://coastwatch.pfeg.noaa.gov/erddap/griddap/jplMURSST41.csv"
+                 f"?analysed_sst[({s.strftime('%Y-%m-%dT09:00:00Z')}):1:({e.strftime('%Y-%m-%dT09:00:00Z')})]"
+                 f"[({lat}):1:({lat})][({lon}):1:({lon})]"
+             )),
+            ("upwell.pfeg.noaa.gov/ncdcOisst21Agg", 17,
+             lambda s, e: (
+                 "https://upwell.pfeg.noaa.gov/erddap/griddap/ncdcOisst21Agg_LonPM180.csv"
+                 f"?sst[({s.strftime('%Y-%m-%dT00:00:00Z')}):1:({e.strftime('%Y-%m-%dT00:00:00Z')})]"
+                 f"[(0.0):1:(0.0)][({lat}):1:({lat})][({lon}):1:({lon})]"
+             )),
+            ("coastwatch.pfeg.noaa.gov/ncdcOisst21Agg", 17,
+             lambda s, e: (
+                 "https://coastwatch.pfeg.noaa.gov/erddap/griddap/ncdcOisst21Agg_LonPM180.csv"
+                 f"?sst[({s.strftime('%Y-%m-%dT00:00:00Z')}):1:({e.strftime('%Y-%m-%dT00:00:00Z')})]"
+                 f"[(0.0):1:(0.0)][({lat}):1:({lat})][({lon}):1:({lon})]"
+             )),
+        ]
+
+        lines: list[str] = []
+        sst_col_idx = 3
+        for label, lag_days, url_fn in _sst_sources:
+            ts, te = _clamped(time_end, lag_days)
+            url = url_fn(ts, te)
+            try:
+                resp = httpx.get(url, timeout=90.0, follow_redirects=True)
+                resp.raise_for_status()
+                lines = resp.text.strip().split("\n")
+                if len(lines) > 2:
+                    logger.debug("MHW SST from %s: %d lines", label, len(lines))
+                    break
+            except Exception as exc:
+                logger.debug("SST source %s failed: %s", label, exc)
+
+        if len(lines) < 3:
+            logger.error("SST fetch for MHW failed: all SST mirrors unreachable")
             return []
 
         # Parse CSV (skip header rows)
@@ -148,11 +202,11 @@ class MarineHeatwaveAdapter(BaseAdapter):
 
         for line in lines[2:]:  # Skip column names + units
             parts = line.split(",")
-            if len(parts) < 4:
+            if len(parts) < sst_col_idx + 1:
                 continue
             try:
                 dt = datetime.fromisoformat(parts[0].replace("Z", "+00:00"))
-                sst = float(parts[3])
+                sst = float(parts[sst_col_idx])
                 dates.append(dt)
                 sst_values.append(sst)
             except (ValueError, IndexError):

@@ -9,6 +9,7 @@ Data portal: https://www.emodnet-seabedhabitats.eu/
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime
 from typing import Any
@@ -19,12 +20,17 @@ logger = logging.getLogger(__name__)
 
 BASE_URL = "https://ows.emodnet-seabedhabitats.eu/geoserver/emodnet_open/wfs"
 
+# Primary layer name — the most current known layer
+_PRIMARY_LAYER = "emodnet_open:eusm2025_eunis2019_full"
+
 
 class EmodnetSeabedAdapter(BaseAdapter):
     """Connector for EMODnet Seabed Habitats WFS endpoint (no auth required)."""
 
     def __init__(self, **kwargs: Any) -> None:
-        super().__init__(requests_per_second=1.0, **kwargs)
+        # Tight timeout: the EMODnet WFS server is often very slow or down.
+        # We fail fast rather than hang for 90s.
+        super().__init__(requests_per_second=1.0, timeout=25.0, max_retries=1, **kwargs)
 
     @property
     def source_name(self) -> str:
@@ -49,24 +55,53 @@ class EmodnetSeabedAdapter(BaseAdapter):
 
         Extra params:
             habitat_type: EUNIS habitat code filter (e.g. 'A5.13')
-            limit: Max features to return (default 500)
+            limit: Max features to return (default 20)
         """
         w, s, e, n = bbox
-        limit = params.get("limit", 500)
+        limit = params.get("limit", 20)
 
+        # Shrink bbox to max 2x2 degrees — polygon features are large
+        mid_lon, mid_lat = (w + e) / 2, (s + n) / 2
+        half = 1.0
+        w = max(w, mid_lon - half)
+        e = min(e, mid_lon + half)
+        s = max(s, mid_lat - half)
+        n = min(n, mid_lat + half)
+
+        habitat_type = params.get("habitat_type")
+
+        # Quick connectivity check: test if the server responds at all
+        # with a minimal WFS request before sending the real query.
+        try:
+            probe_params = {
+                "service": "WFS",
+                "version": "2.0.0",
+                "request": "GetFeature",
+                "typeNames": _PRIMARY_LAYER,
+                "outputFormat": "application/json",
+                "count": 1,
+                "bbox": f"{mid_lat-0.01},{mid_lon-0.01},{mid_lat+0.01},{mid_lon+0.01},urn:ogc:def:crs:EPSG::4326",
+            }
+            await asyncio.wait_for(
+                self._request("GET", BASE_URL, params=probe_params),
+                timeout=15.0,
+            )
+        except (asyncio.TimeoutError, Exception) as exc:
+            logger.warning("EMODnet Seabed server unresponsive (probe failed): %s", exc)
+            return []
+
+        # Server is alive — send the real query
         api_params: dict[str, Any] = {
             "service": "WFS",
             "version": "2.0.0",
             "request": "GetFeature",
-            "typeNames": "emodnet_open:euseamap_2023",
+            "typeNames": _PRIMARY_LAYER,
             "outputFormat": "application/json",
             "count": limit,
             "bbox": f"{s},{w},{n},{e},urn:ogc:def:crs:EPSG::4326",
         }
-
-        habitat_type = params.get("habitat_type")
         if habitat_type:
-            api_params["cql_filter"] = f"eunis_code LIKE '{habitat_type}%'"
+            api_params["cql_filter"] = f"eunis2019c LIKE '{habitat_type}%'"
 
         try:
             resp = await self._request("GET", BASE_URL, params=api_params)
@@ -112,17 +147,17 @@ class EmodnetSeabedAdapter(BaseAdapter):
                 "obs_type": "physical",
                 "timestamp": time_start,
                 "geometry": {"type": "Point", "coordinates": [lon, lat]},
-                "source_id": f"emodnet-seabed-{props.get('gml_id', props.get('id', ''))}",
+                "source_id": f"emodnet-seabed-{props.get('objectid', '')}",
                 "source_name": "EMODnet Seabed Habitats",
                 "quality_score": 0.85,
                 "payload": {
-                    "eunis_code": props.get("eunis_code", ""),
-                    "eunis_name": props.get("eunis_name", props.get("habitat", "")),
+                    "eunis_code": props.get("eunis2019c", ""),
+                    "eunis_name": props.get("eunis2019d", ""),
                     "substrate": props.get("substrate", ""),
-                    "biological_zone": props.get("bioz", props.get("biological_zone", "")),
+                    "biological_zone": props.get("biozone", ""),
                     "energy_level": props.get("energy", ""),
-                    "confidence": props.get("confidence", ""),
-                    "survey_year": props.get("survey_year", ""),
+                    "salinity": props.get("salinity", ""),
+                    "oxygen": props.get("oxygen", ""),
                 },
             })
 

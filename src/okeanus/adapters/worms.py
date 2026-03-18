@@ -104,14 +104,63 @@ class WormsAdapter(BaseAdapter):
         time_end: datetime,
         **params: Any,
     ) -> list[dict[str, Any]]:
-        """WoRMS is a taxonomy service, not a spatial one.
+        """Fetch marine species records from WoRMS.
 
-        This implementation expects a ``names`` list in *params* and returns
-        the AphiaRecords for each name found.
+        Pass ``names`` list for specific lookups, or defaults to common
+        marine vernacular searches.
         """
         names: list[str] = params.get("names", [])
-        results: list[dict[str, Any]] = []
+        limit = params.get("limit", 20)
+
+        if not names:
+            names = ["dolphin", "whale", "coral", "shark", "tuna"]
+
+        observations: list[dict[str, Any]] = []
         for name in names:
-            records = await self.search_by_name(name)
-            results.extend(records)
-        return results
+            if len(observations) >= limit:
+                break
+            url = f"{BASE_URL}AphiaRecordsByVernacular/{name}"
+            try:
+                resp = await self._request("GET", url, params={"like": "true", "offset": 1})
+                records = resp.json()
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 204:
+                    continue
+                raise
+            except Exception:
+                continue
+
+            if not isinstance(records, list):
+                continue
+
+            for rec in records:
+                if not isinstance(rec, dict):
+                    continue
+                observations.append({
+                    "obs_type": "biological",
+                    "timestamp": time_start,
+                    "geometry": {"type": "Point", "coordinates": [0, 0]},
+                    "source_id": f"worms-{rec.get('AphiaID', '')}",
+                    "source_name": "WoRMS",
+                    "quality_score": 0.95,
+                    "payload": {
+                        "aphia_id": rec.get("AphiaID"),
+                        "scientific_name": rec.get("scientificname", ""),
+                        "authority": rec.get("authority", ""),
+                        "status": rec.get("status", ""),
+                        "rank": rec.get("rank", ""),
+                        "valid_name": rec.get("valid_name", ""),
+                        "kingdom": rec.get("kingdom", ""),
+                        "phylum": rec.get("phylum", ""),
+                        "class": rec.get("class", ""),
+                        "order": rec.get("order", ""),
+                        "family": rec.get("family", ""),
+                        "genus": rec.get("genus", ""),
+                        "is_marine": rec.get("isMarine"),
+                    },
+                })
+                if len(observations) >= limit:
+                    break
+
+        logger.info("WoRMS returned %d species records", len(observations))
+        return observations

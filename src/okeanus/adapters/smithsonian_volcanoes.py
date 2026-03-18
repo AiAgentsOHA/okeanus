@@ -17,8 +17,9 @@ from okeanus.adapters.base import BaseAdapter
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://volcano.si.edu/api/v1"
-SEARCH_URL = "https://volcano.si.edu/database/search_eruption_results.cfm"
+WFS_URL = (
+    "https://webservices.volcano.si.edu/geoserver/GVP-VOTW/ows"
+)
 
 
 class SmithsonianVolcanoesAdapter(BaseAdapter):
@@ -54,50 +55,59 @@ class SmithsonianVolcanoesAdapter(BaseAdapter):
         """
         w, s, e, n = bbox
         limit = params.get("limit", 500)
-        submarine_only = params.get("submarine_only", True)
+        submarine_only = params.get("submarine_only", False)
 
-        # Use the GVP search endpoint for volcano list
+        # Use GeoServer WFS endpoint for GVP Holocene Volcanoes
+        cql_filters: list[str] = []
+        cql_filters.append(f"BBOX(GeoLocation,{w},{s},{e},{n})")
+        if submarine_only:
+            cql_filters.append("Primary_Volcano_Type LIKE '%Submarine%'")
+
         api_params: dict[str, Any] = {
-            "lat_min": s,
-            "lat_max": n,
-            "lon_min": w,
-            "lon_max": e,
-            "format": "json",
+            "service": "WFS",
+            "version": "1.0.0",
+            "request": "GetFeature",
+            "typeName": "GVP-VOTW:Smithsonian_VOTW_Holocene_Volcanoes",
+            "outputFormat": "application/json",
+            "maxFeatures": limit,
+            "CQL_FILTER": " AND ".join(cql_filters),
         }
 
-        if submarine_only:
-            api_params["type"] = "Submarine"
-
         try:
-            resp = await self._request("GET", f"{BASE_URL}/volcanoes", params=api_params)
+            resp = await self._request("GET", WFS_URL, params=api_params)
             data = resp.json()
         except Exception as exc:
             logger.error("Smithsonian GVP fetch failed: %s", exc)
-            return []
+            # Retry without submarine filter in case it's too restrictive
+            if submarine_only:
+                api_params["CQL_FILTER"] = f"BBOX(GeoLocation,{w},{s},{e},{n})"
+                try:
+                    resp = await self._request("GET", WFS_URL, params=api_params)
+                    data = resp.json()
+                except Exception:
+                    return []
+            else:
+                return []
 
-        results = data if isinstance(data, list) else data.get("volcanoes", data.get("results", []))
-        if not isinstance(results, list):
-            results = []
-
+        features = data.get("features", [])
         observations: list[dict[str, Any]] = []
 
-        for rec in results[:limit]:
-            if not isinstance(rec, dict):
+        for feat in features:
+            props = feat.get("properties", {})
+            geom = feat.get("geometry", {})
+
+            coords = geom.get("coordinates", [])
+            if len(coords) >= 2:
+                lon, lat = float(coords[0]), float(coords[1])
+            else:
                 continue
 
-            lon = rec.get("longitude", rec.get("Longitude"))
-            lat = rec.get("latitude", rec.get("Latitude"))
-            if lon is None or lat is None:
-                continue
-
+            last_eruption = props.get("Last_Eruption_Year")
             try:
-                lon, lat = float(lon), float(lat)
-            except (ValueError, TypeError):
-                continue
-
-            last_eruption = rec.get("last_eruption_year", rec.get("LastEruptionYear"))
-            try:
-                ts = datetime(int(last_eruption), 1, 1) if last_eruption else time_start
+                if last_eruption and str(last_eruption).strip() not in ("", "Unknown"):
+                    ts = datetime(int(last_eruption), 1, 1)
+                else:
+                    ts = time_start
             except (ValueError, TypeError):
                 ts = time_start
 
@@ -105,19 +115,20 @@ class SmithsonianVolcanoesAdapter(BaseAdapter):
                 "obs_type": "physical",
                 "timestamp": ts,
                 "geometry": {"type": "Point", "coordinates": [lon, lat]},
-                "source_id": f"gvp-{rec.get('volcano_number', rec.get('VolcanoNumber', ''))}",
+                "source_id": f"gvp-{props.get('Volcano_Number', '')}",
                 "source_name": "Smithsonian GVP",
                 "quality_score": 0.95,
                 "payload": {
-                    "volcano_name": rec.get("volcano_name", rec.get("VolcanoName", "")),
-                    "volcano_number": rec.get("volcano_number", rec.get("VolcanoNumber")),
-                    "primary_type": rec.get("primary_volcano_type", rec.get("Type", "")),
-                    "country": rec.get("country", rec.get("Country", "")),
-                    "region": rec.get("region", rec.get("Region", "")),
-                    "summit_elevation_m": rec.get("elevation_m", rec.get("Elevation")),
+                    "volcano_name": props.get("Volcano_Name", ""),
+                    "volcano_number": props.get("Volcano_Number"),
+                    "primary_type": props.get("Primary_Volcano_Type", ""),
+                    "country": props.get("Country", ""),
+                    "region": props.get("Region", ""),
+                    "subregion": props.get("Subregion", ""),
+                    "summit_elevation_m": props.get("Elevation"),
                     "last_eruption_year": last_eruption,
-                    "tectonic_setting": rec.get("tectonic_setting", ""),
-                    "dominant_rock_type": rec.get("dominant_rock_type", ""),
+                    "tectonic_setting": props.get("Tectonic_Setting", ""),
+                    "dominant_rock_type": props.get("Major_Rock_Type", ""),
                 },
             })
 

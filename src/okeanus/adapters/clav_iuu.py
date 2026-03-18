@@ -3,27 +3,32 @@
 Aggregated IUU (Illegal, Unreported, Unregulated) fishing vessel lists
 from all RFMOs, maintained by Trygg Mat Tracking (TMT). No auth required.
 
+The site has no REST API -- data is served via an HTML search page.
+This adapter scrapes the search results table from the public search
+page at https://www.iuu-vessels.org/Home/Search.
+
 Data source: https://www.iuu-vessels.org/
 """
 
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+import re
+from datetime import datetime, timezone
 from typing import Any
 
 from okeanus.adapters.base import BaseAdapter
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://www.iuu-vessels.org/api"
+SEARCH_URL = "https://www.iuu-vessels.org/Home/Search"
 
 
 class ClavIuuAdapter(BaseAdapter):
     """Connector for the Combined IUU Vessel List (no auth required).
 
     Returns vessels flagged for illegal fishing by RFMOs worldwide.
-    No spatial coordinates per se — vessels are listed by flag state and RFMO.
+    No spatial coordinates per se -- vessels are listed by flag state and RFMO.
     """
 
     def __init__(self, **kwargs: Any) -> None:
@@ -48,83 +53,93 @@ class ClavIuuAdapter(BaseAdapter):
         time_end: datetime,
         **params: Any,
     ) -> list[dict[str, Any]]:
-        """Fetch IUU-listed vessels.
+        """Fetch IUU-listed vessels by scraping the HTML search page.
 
         Since IUU listings don't have coordinates, results are returned
         with geometry at (0, 0). Use vessel identifiers (IMO, name) to
         cross-reference with AIS position data.
 
         Extra params:
-            flag: Flag state filter (e.g. 'CHN', 'KOR')
-            rfmo: RFMO filter (e.g. 'CCAMLR', 'ICCAT', 'WCPFC')
-            vessel_name: Vessel name search
+            limit: max records (default 200)
         """
         limit = params.get("limit", 200)
 
-        api_params: dict[str, Any] = {
-            "limit": limit,
-            "format": "json",
-        }
-        if flag := params.get("flag"):
-            api_params["flag"] = flag
-        if rfmo := params.get("rfmo"):
-            api_params["rfmo"] = rfmo
-        if vessel_name := params.get("vessel_name"):
-            api_params["name"] = vessel_name
-
         try:
-            resp = await self._request(
-                "GET", f"{BASE_URL}/vessels", params=api_params,
-            )
-            data = resp.json()
+            resp = await self._request("GET", SEARCH_URL)
+            html = resp.text
         except Exception as exc:
             logger.error("CLAV IUU fetch failed: %s", exc)
             return []
 
-        results = data if isinstance(data, list) else data.get("vessels", data.get("results", []))
+        observations = self._parse_html_table(html, limit)
+        logger.info("CLAV IUU returned %d listed vessels", len(observations))
+        return observations
+
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_html_table(html: str, limit: int) -> list[dict[str, Any]]:
+        """Extract vessel records from the search results HTML table."""
         observations: list[dict[str, Any]] = []
 
-        for rec in results:
-            if not isinstance(rec, dict):
+        row_pattern = re.compile(r"<tr[^>]*>(.*?)</tr>", re.DOTALL | re.IGNORECASE)
+        cell_pattern = re.compile(r"<td[^>]*>(.*?)</td>", re.DOTALL | re.IGNORECASE)
+        tag_strip = re.compile(r"<[^>]+>")
+
+        rows = row_pattern.findall(html)
+
+        for row_html in rows:
+            if len(observations) >= limit:
+                break
+
+            cells = cell_pattern.findall(row_html)
+            if len(cells) < 3:
                 continue
 
-            # IUU listings don't have coordinates
-            date_str = rec.get("listingDate") or rec.get("date", "")
-            try:
-                if date_str and len(str(date_str)) >= 10:
-                    ts = datetime.fromisoformat(str(date_str)[:10] + "T00:00:00+00:00")
-                elif date_str and len(str(date_str)) == 4:
-                    ts = datetime.fromisoformat(f"{date_str}-01-01T00:00:00+00:00")
-                else:
-                    ts = datetime.now()
-            except (ValueError, AttributeError):
-                ts = datetime.now()
+            values = [tag_strip.sub("", c).strip() for c in cells]
 
-            imo = rec.get("imo") or rec.get("IMO")
-            mmsi = rec.get("mmsi") or rec.get("MMSI")
+            # Skip header rows
+            if values[0].lower() in ("vessel name", "name", ""):
+                continue
+
+            vessel_name = values[0] if len(values) > 0 else ""
+            flag = values[1] if len(values) > 1 else ""
+            rfmo = values[2] if len(values) > 2 else ""
+            listing_date = values[3] if len(values) > 3 else ""
+            call_sign = values[4] if len(values) > 4 else ""
+            imo = values[5] if len(values) > 5 else ""
+
+            if not vessel_name:
+                continue
+
+            ts = datetime.now(timezone.utc)
+            if listing_date:
+                for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%d-%b-%Y", "%Y"):
+                    try:
+                        ts = datetime.strptime(listing_date.strip(), fmt).replace(
+                            tzinfo=timezone.utc
+                        )
+                        break
+                    except ValueError:
+                        continue
+
+            source_id = f"iuu-{imo or vessel_name}".replace(" ", "_")
 
             observations.append({
                 "obs_type": "vessel",
                 "timestamp": ts,
                 "geometry": {"type": "Point", "coordinates": [0.0, 0.0]},
-                "source_id": f"iuu-{rec.get('id', imo or rec.get('name', ''))}",
+                "source_id": source_id,
                 "source_name": "CLAV IUU",
-                "mmsi": int(mmsi) if mmsi else None,
                 "quality_score": 0.95,
                 "payload": {
-                    "vessel_name": rec.get("name", rec.get("vesselName", "")),
+                    "vessel_name": vessel_name,
                     "imo": imo,
-                    "flag": rec.get("flag", rec.get("flagState", "")),
-                    "rfmo": rec.get("rfmo", rec.get("listingOrganization", "")),
-                    "call_sign": rec.get("callSign", ""),
-                    "vessel_type": rec.get("vesselType", ""),
-                    "listing_date": date_str,
-                    "offence": rec.get("offence", rec.get("reason", "")),
-                    "aliases": rec.get("aliases", []),
-                    "previous_flags": rec.get("previousFlags", []),
-                    "owner": rec.get("owner", ""),
+                    "flag": flag,
+                    "rfmo": rfmo,
+                    "call_sign": call_sign,
+                    "listing_date": listing_date,
                 },
             })
 
-        logger.info("CLAV IUU returned %d listed vessels", len(observations))
         return observations

@@ -2,7 +2,7 @@
 
 The Allen Coral Atlas provides satellite-derived global coral reef maps
 including geomorphic zonation and benthic habitat at 5m resolution.
-Data accessible via ArcGIS REST API. No auth required.
+Data accessible via GeoServer WFS. No auth required.
 
 Data source: https://allencoralatlas.org/
 """
@@ -17,13 +17,7 @@ from okeanus.adapters.base import BaseAdapter
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = (
-    "https://allencoralatlas.org/api/mapping/geomorphic"
-)
-ARCGIS_URL = (
-    "https://tiles.arcgis.com/tiles/rYg6fViuRYaCAXiB/arcgis/rest/services"
-    "/ACA_geomorphic/FeatureServer/0/query"
-)
+WFS_URL = "https://allencoralatlas.org/geoserver/ows"
 
 
 class AllenCoralAdapter(BaseAdapter):
@@ -55,32 +49,32 @@ class AllenCoralAdapter(BaseAdapter):
 
         Extra params:
             zone_type: filter by geomorphic zone (e.g. 'Reef Crest', 'Lagoon')
-            limit: max records (default 500)
+            layer: 'geomorphic' (default) or 'benthic'
+            limit: max records (default 100)
         """
         w, s, e, n = bbox
-        limit = params.get("limit", 500)
+        limit = params.get("limit", 100)
         zone_type = params.get("zone_type")
+        layer = params.get("layer", "geomorphic")
 
-        where = "1=1"
-        if zone_type:
-            where = f"class_name = '{zone_type}'"
+        # Global bbox is too large for coral data — clamp to Great Barrier Reef
+        if (e - w) > 100 or (n - s) > 100:
+            w, s, e, n = 142.0, -20.0, 155.0, -10.0
 
-        api_params: dict[str, Any] = {
-            "where": where,
-            "geometry": f"{w},{s},{e},{n}",
-            "geometryType": "esriGeometryEnvelope",
-            "inSR": "4326",
-            "outSR": "4326",
-            "spatialRel": "esriSpatialRelIntersects",
-            "outFields": "*",
-            "returnGeometry": "true",
-            "returnCentroid": "true",
-            "resultRecordCount": limit,
-            "f": "json",
+        type_name = f"coral-atlas:{layer}_data_verbose"
+
+        wfs_params: dict[str, Any] = {
+            "service": "wfs",
+            "version": "2.0.0",
+            "request": "GetFeature",
+            "typeNames": type_name,
+            "count": limit,
+            "outputFormat": "application/json",
+            "bbox": f"{w},{s},{e},{n},EPSG:4326",
         }
 
         try:
-            resp = await self._request("GET", ARCGIS_URL, params=api_params)
+            resp = await self._request("GET", WFS_URL, params=wfs_params)
             data = resp.json()
         except Exception as exc:
             logger.error("Allen Coral Atlas fetch failed: %s", exc)
@@ -90,40 +84,58 @@ class AllenCoralAdapter(BaseAdapter):
         observations: list[dict[str, Any]] = []
 
         for feat in features:
+            if len(observations) >= limit:
+                break
+
             geom = feat.get("geometry", {})
-            attrs = feat.get("attributes", {})
+            props = feat.get("properties", {})
 
-            centroid = feat.get("centroid")
-            if centroid:
-                lon = centroid.get("x")
-                lat = centroid.get("y")
-            elif "rings" in geom and geom["rings"]:
-                ring = geom["rings"][0]
-                lon = sum(pt[0] for pt in ring) / len(ring) if ring else None
-                lat = sum(pt[1] for pt in ring) / len(ring) if ring else None
-            else:
-                lon = geom.get("x")
-                lat = geom.get("y")
+            class_name = props.get("class_name", "")
+            if zone_type and zone_type.lower() != class_name.lower():
+                continue
 
+            area = props.get("area_sqkm")
+
+            # Compute centroid from polygon geometry
+            lon, lat = _centroid(geom)
             if lon is None or lat is None:
                 continue
 
             observations.append({
                 "obs_type": "biological",
                 "timestamp": time_start,
-                "geometry": {"type": "Point", "coordinates": [float(lon), float(lat)]},
-                "source_id": f"aca-{attrs.get('OBJECTID', '')}",
+                "geometry": {"type": "Point", "coordinates": [lon, lat]},
+                "source_id": f"aca-{feat.get('id', len(observations))}",
                 "source_name": "Allen Coral Atlas",
                 "quality_score": 0.9,
                 "payload": {
-                    "geomorphic_class": attrs.get("class_name", attrs.get("CLASS", "")),
-                    "area_sqkm": attrs.get("area_sqkm", attrs.get("Shape_Area")),
-                    "reef_system": attrs.get("reef_system", ""),
-                    "country": attrs.get("country", ""),
-                    "mapping_date": attrs.get("map_date", ""),
-                    "confidence": attrs.get("confidence", ""),
+                    "geomorphic_class": class_name,
+                    "area_sqkm": area,
                 },
             })
 
         logger.info("Allen Coral Atlas returned %d features", len(observations))
         return observations
+
+
+def _centroid(geom: dict[str, Any]) -> tuple[float | None, float | None]:
+    """Extract a representative point from a GeoJSON geometry."""
+    gtype = geom.get("type", "")
+    coords = geom.get("coordinates")
+    if not coords:
+        return None, None
+
+    if gtype == "Point":
+        return float(coords[0]), float(coords[1])
+    elif gtype == "Polygon":
+        ring = coords[0]
+        lon = sum(pt[0] for pt in ring) / len(ring)
+        lat = sum(pt[1] for pt in ring) / len(ring)
+        return lon, lat
+    elif gtype == "MultiPolygon":
+        # Use the first polygon's first ring
+        ring = coords[0][0]
+        lon = sum(pt[0] for pt in ring) / len(ring)
+        lat = sum(pt[1] for pt in ring) / len(ring)
+        return lon, lat
+    return None, None

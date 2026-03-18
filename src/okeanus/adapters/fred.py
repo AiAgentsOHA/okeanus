@@ -10,6 +10,7 @@ Requires free API key from https://fred.stlouisfed.org/docs/api/api_key.html
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime
 from typing import Any
 
@@ -41,7 +42,7 @@ class FredAdapter(BaseAdapter):
 
     def __init__(self, *, api_key: str = "", **kwargs: Any) -> None:
         super().__init__(requests_per_second=5.0, **kwargs)
-        self._api_key = api_key
+        self._api_key = api_key or os.environ.get("FRED_API_KEY", "")
 
     @property
     def source_name(self) -> str:

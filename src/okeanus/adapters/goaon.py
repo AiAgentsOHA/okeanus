@@ -1,10 +1,10 @@
-"""GOA-ON adapter — Global Ocean Acidification Observing Network.
+"""GOA-ON adapter -- Global Ocean Acidification Observing Network.
 
 GOA-ON coordinates ocean acidification observations from 1,000+ members
 in 100+ countries. Provides station locations and metadata via their
-public data portal. No auth required.
+Vizer-based portal. No auth required.
 
-Data source: https://www.goa-on.org/
+Data source: https://portal.goa-on.org/Explorer
 """
 
 from __future__ import annotations
@@ -17,7 +17,10 @@ from okeanus.adapters.base import BaseAdapter
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://www.goa-on.org/api/assets"
+# GOA-ON portal uses a Vizer framework with PHP SSA (server-side API)
+# endpoints. The get_siso_list.php endpoint returns all platform data
+# including lat, lon, name, measurements, etc.
+PORTAL_URL = "https://portal.goa-on.org/ssa/get_siso_list.php"
 
 
 class GoaOnAdapter(BaseAdapter):
@@ -48,69 +51,87 @@ class GoaOnAdapter(BaseAdapter):
         """Fetch GOA-ON station locations and metadata within bbox.
 
         Extra params:
-            platform_type: filter by platform (e.g. 'buoy', 'ship', 'mooring')
+            platform_type: filter by platform (e.g. 'Fixed Ocean Time Series', 'Mooring')
             limit: max records (default 500)
         """
         w, s, e, n = bbox
         limit = params.get("limit", 500)
         platform_type = params.get("platform_type")
 
-        api_params: dict[str, Any] = {
-            "min_lat": s,
-            "max_lat": n,
-            "min_lon": w,
-            "max_lon": e,
-            "format": "json",
-        }
-
-        if platform_type:
-            api_params["platform_type"] = platform_type
-
+        # POST to the Vizer SSA endpoint with Explorer app context
+        # The endpoint requires form-encoded 'app' parameter to authenticate
         try:
-            resp = await self._request("GET", BASE_URL, params=api_params)
+            resp = await self._request(
+                "POST",
+                PORTAL_URL,
+                data="app=Explorer&use_grid_info=true",
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
             data = resp.json()
         except Exception as exc:
             logger.error("GOA-ON fetch failed: %s", exc)
             return []
 
-        results = data if isinstance(data, list) else data.get("assets", data.get("stations", []))
-        if not isinstance(results, list):
-            results = []
+        if not data.get("success"):
+            logger.warning("GOA-ON returned success=false")
+            return []
+
+        items = data.get("items", [])
+        if not isinstance(items, list):
+            logger.warning("GOA-ON unexpected items format")
+            return []
 
         observations: list[dict[str, Any]] = []
 
-        for rec in results[:limit]:
+        for rec in items:
             if not isinstance(rec, dict):
                 continue
 
-            lon = rec.get("longitude", rec.get("lon"))
-            lat = rec.get("latitude", rec.get("lat"))
-            if lon is None or lat is None:
+            lat = rec.get("lat")
+            lon = rec.get("lon")
+            if lat is None or lon is None:
                 continue
 
             try:
-                lon, lat = float(lon), float(lat)
+                lat, lon = float(lat), float(lon)
             except (ValueError, TypeError):
                 continue
+
+            # Filter by bbox
+            if lat < s or lat > n or lon < w or lon > e:
+                continue
+
+            # Filter by platform type if specified
+            ptype = rec.get("platform_type", "")
+            if platform_type and platform_type.lower() not in ptype.lower():
+                continue
+
+            # Extract measurement names
+            measurements = rec.get("measurements", [])
+            var_names = []
+            if isinstance(measurements, list):
+                var_names = [m.get("name", "") for m in measurements if isinstance(m, dict)]
 
             observations.append({
                 "obs_type": "physical",
                 "timestamp": time_start,
                 "geometry": {"type": "Point", "coordinates": [lon, lat]},
-                "source_id": f"goaon-{rec.get('id', rec.get('asset_id', ''))}",
+                "source_id": f"goaon-{rec.get('siso_label', '')}",
                 "source_name": "GOA-ON",
                 "quality_score": 0.85,
                 "payload": {
-                    "station_name": rec.get("name", rec.get("station_name", "")),
-                    "platform_type": rec.get("platform_type", rec.get("type", "")),
-                    "variables": rec.get("variables", rec.get("parameters", [])),
-                    "country": rec.get("country", ""),
-                    "organization": rec.get("organization", rec.get("institution", "")),
-                    "depth_m": rec.get("depth"),
-                    "status": rec.get("status", ""),
-                    "data_url": rec.get("data_url", ""),
+                    "station_name": rec.get("name", rec.get("short_name", "")),
+                    "platform_type": ptype,
+                    "variables": var_names,
+                    "region": rec.get("region", ""),
+                    "provider": rec.get("provider", ""),
+                    "deploy_status": rec.get("deploy_status", ""),
+                    "info_url": rec.get("info_url", ""),
                 },
             })
+
+            if len(observations) >= limit:
+                break
 
         logger.info("GOA-ON returned %d stations", len(observations))
         return observations

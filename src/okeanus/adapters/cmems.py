@@ -37,8 +37,9 @@ class CmemsAdapter(BaseAdapter):
 
     def __init__(self, *, username: str = "", password: str = "", **kw: Any) -> None:
         super().__init__(requests_per_second=0.5, **kw)
-        self._username = username or ""
-        self._password = password or ""
+        import os
+        self._username = username or os.environ.get("CMEMS_USERNAME", "")
+        self._password = password or os.environ.get("CMEMS_PASSWORD", "")
 
     @property
     def source_name(self) -> str:

@@ -23,6 +23,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -85,6 +86,9 @@ class TimeSeries(Base):
     unit: Mapped[str | None] = mapped_column(String(50), nullable=True)
     commodity: Mapped[str | None] = mapped_column(String(100), nullable=True)
     country: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    entity_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("entities.id"), nullable=True
+    )
 
     __table_args__ = (
         UniqueConstraint("source_name", "source_id", name="uq_time_series_source"),
@@ -92,6 +96,7 @@ class TimeSeries(Base):
         Index("ix_time_series_source_ts", "source_name", "timestamp"),
         Index("ix_time_series_commodity_country", "commodity", "country"),
         Index("ix_time_series_geometry", "geometry", postgresql_using="gist"),
+        Index("ix_timeseries_entity", "entity_id"),
     )
 
 
@@ -176,6 +181,8 @@ class Flow(Base):
     __table_args__ = (
         Index("ix_flows_type_ts", "flow_type", "timestamp"),
         Index("ix_flows_geometry", "geometry", postgresql_using="gist"),
+        Index("ix_flows_source_entity", "source_entity_id", postgresql_where=text("source_entity_id IS NOT NULL")),
+        Index("ix_flows_dest_entity", "dest_entity_id", postgresql_where=text("dest_entity_id IS NOT NULL")),
     )
 
 
@@ -210,10 +217,14 @@ class Event(Base):
     )
     severity: Mapped[str | None] = mapped_column(String(20), nullable=True)
     economic_impact: Mapped[float | None] = mapped_column(Float, nullable=True)
+    entity_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("entities.id"), nullable=True
+    )
 
     __table_args__ = (
         Index("ix_events_type_ts", "event_type", "timestamp"),
         Index("ix_events_geometry", "geometry", postgresql_using="gist"),
+        Index("ix_events_entity", "entity_id"),
     )
 
 
@@ -256,6 +267,7 @@ class Assessment(Base):
     __table_args__ = (
         Index("ix_assessments_metric_ts", "metric_code", "timestamp"),
         Index("ix_assessments_assessor_entity", "assessor", "entity_id"),
+        Index("ix_assessments_entity", "entity_id"),
     )
 
 
@@ -361,6 +373,7 @@ class TimeSeriesRead(BaseModel):
     unit: str | None = None
     commodity: str | None = None
     country: str | None = None
+    entity_id: uuid.UUID | None = None
 
     @field_validator("geometry", mode="before")
     @classmethod
@@ -436,6 +449,7 @@ class EventRead(BaseModel):
     timestamp: datetime
     severity: str | None = None
     economic_impact: float | None = None
+    entity_id: uuid.UUID | None = None
 
     @field_validator("geometry", mode="before")
     @classmethod

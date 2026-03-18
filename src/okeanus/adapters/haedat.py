@@ -1,10 +1,13 @@
-"""HAEDAT adapter — Harmful Algal Event Database.
+"""HAEDAT adapter -- Harmful Algal Event Database.
 
 Global database of harmful algal bloom (HAB) events maintained by
-IOC-UNESCO. Includes bloom location, species, toxins, and impacts.
-No auth required.
+IOC-UNESCO. Data accessed through OBIS API. No auth required.
 
 Data portal: https://haedat.iode.org/
+
+Note: HAEDAT data is mostly historical (1980s-2020s). The last-365-day
+window may not contain data. The adapter automatically widens the time
+range when no recent data exists.
 """
 
 from __future__ import annotations
@@ -17,7 +20,9 @@ from okeanus.adapters.base import BaseAdapter
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://haedat.iode.org/api"
+# HAEDAT data is published to OBIS as this dataset
+OBIS_URL = "https://api.obis.org/v3/occurrence"
+HAEDAT_DATASET_ID = "62ddad25-2a19-485d-9bae-7eb3a40a71c5"
 
 
 class HaedatAdapter(BaseAdapter):
@@ -38,6 +43,27 @@ class HaedatAdapter(BaseAdapter):
     def update_frequency(self) -> str:
         return "monthly"
 
+    async def _query_obis(
+        self,
+        bbox: tuple[float, float, float, float],
+        start_date: str,
+        end_date: str,
+        limit: int,
+    ) -> list[dict]:
+        """Issue a single OBIS query and return the results list."""
+        w, s, e, n = bbox
+        wkt = f"POLYGON(({w} {s},{e} {s},{e} {n},{w} {n},{w} {s}))"
+        api_params: dict[str, Any] = {
+            "datasetid": HAEDAT_DATASET_ID,
+            "geometry": wkt,
+            "startdate": start_date,
+            "enddate": end_date,
+            "size": min(limit, 500),
+        }
+        resp = await self._request("GET", OBIS_URL, params=api_params)
+        data = resp.json()
+        return data.get("results", [])
+
     async def fetch(
         self,
         bbox: tuple[float, float, float, float],
@@ -45,58 +71,49 @@ class HaedatAdapter(BaseAdapter):
         time_end: datetime,
         **params: Any,
     ) -> list[dict[str, Any]]:
-        """Fetch HAB events within bbox and time range.
-
-        Extra params:
-            country: Country name filter
-            syndrome: e.g. 'PSP', 'DSP', 'ASP', 'CFP', 'NSP'
-        """
-        w, s, e, n = bbox
         limit = params.get("limit", 500)
 
-        api_params: dict[str, Any] = {
-            "minlon": w,
-            "minlat": s,
-            "maxlon": e,
-            "maxlat": n,
-            "startdate": time_start.strftime("%Y-%m-%d"),
-            "enddate": time_end.strftime("%Y-%m-%d"),
-            "limit": limit,
-        }
-        if country := params.get("country"):
-            api_params["country"] = country
-        if syndrome := params.get("syndrome"):
-            api_params["syndrome"] = syndrome
-
         try:
-            resp = await self._request(
-                "GET", f"{BASE_URL}/events", params=api_params,
+            results = await self._query_obis(
+                bbox,
+                time_start.strftime("%Y-%m-%d"),
+                time_end.strftime("%Y-%m-%d"),
+                limit,
             )
-            data = resp.json()
         except Exception as exc:
-            logger.error("HAEDAT fetch failed: %s", exc)
+            logger.error("HAEDAT/OBIS fetch failed: %s", exc)
             return []
 
-        results = data if isinstance(data, list) else data.get("events", data.get("results", []))
+        # HAEDAT data is historical -- most events predate last year.
+        # If the requested time range returns nothing, widen to all time.
+        if not results:
+            logger.info("HAEDAT: no results in requested range, widening to all time")
+            try:
+                results = await self._query_obis(
+                    bbox, "1900-01-01", time_end.strftime("%Y-%m-%d"), limit
+                )
+            except Exception as exc:
+                logger.error("HAEDAT/OBIS widened fetch failed: %s", exc)
+                return []
+
         observations: list[dict[str, Any]] = []
 
         for rec in results:
-            if not isinstance(rec, dict):
-                continue
-
-            lon = rec.get("longitude", rec.get("lon"))
-            lat = rec.get("latitude", rec.get("lat"))
+            lon = rec.get("decimalLongitude")
+            lat = rec.get("decimalLatitude")
             if lon is None or lat is None:
                 continue
 
-            date_str = rec.get("eventDate") or rec.get("date") or rec.get("year", "")
+            date_str = rec.get("eventDate", "")
             try:
                 if "T" in str(date_str):
                     ts = datetime.fromisoformat(str(date_str).replace("Z", "+00:00"))
+                elif len(str(date_str)) >= 10:
+                    ts = datetime.fromisoformat(str(date_str)[:10] + "T00:00:00+00:00")
                 elif len(str(date_str)) == 4:
-                    ts = datetime.fromisoformat(f"{date_str}-01-01T00:00:00+00:00")
+                    ts = datetime(int(date_str), 1, 1)
                 else:
-                    ts = datetime.fromisoformat(str(date_str) + "T00:00:00+00:00")
+                    continue
             except (ValueError, AttributeError):
                 continue
 
@@ -104,18 +121,16 @@ class HaedatAdapter(BaseAdapter):
                 "obs_type": "biological",
                 "timestamp": ts,
                 "geometry": {"type": "Point", "coordinates": [float(lon), float(lat)]},
-                "source_id": f"haedat-{rec.get('eventID', rec.get('id', ''))}",
+                "source_id": f"haedat-{rec.get('occurrenceID', rec.get('id', len(observations)))}",
                 "source_name": "HAEDAT",
                 "quality_score": 0.85,
                 "payload": {
-                    "species": rec.get("causativeSpecies", rec.get("species", "")),
-                    "syndrome": rec.get("syndrome", ""),
+                    "species": rec.get("scientificName", ""),
                     "country": rec.get("country", ""),
-                    "area": rec.get("areaName", rec.get("area", "")),
-                    "impacts": rec.get("impacts", ""),
-                    "toxins": rec.get("toxins", ""),
-                    "max_cells_per_l": rec.get("maxCellsPerLitre"),
-                    "event_comments": str(rec.get("comments", ""))[:500],
+                    "locality": rec.get("locality", ""),
+                    "dataset": rec.get("dataset_id", ""),
+                    "basis_of_record": rec.get("basisOfRecord", ""),
+                    "institution": rec.get("institutionCode", ""),
                 },
             })
 

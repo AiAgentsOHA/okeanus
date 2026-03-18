@@ -17,16 +17,7 @@ from okeanus.adapters.base import BaseAdapter
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://api.orcasound.net/api"
-
-# Known hydrophone nodes
-NODES = {
-    "bush_point": {"lat": 48.0336, "lon": -122.6040, "name": "Bush Point"},
-    "port_townsend": {"lat": 48.1317, "lon": -122.7603, "name": "Port Townsend"},
-    "orcasound_lab": {"lat": 48.5583, "lon": -123.0500, "name": "Orcasound Lab"},
-    "sunset_bay": {"lat": 48.5340, "lon": -123.0085, "name": "Sunset Bay"},
-    "north_san_juan": {"lat": 48.6000, "lon": -123.1000, "name": "North San Juan Channel"},
-}
+FEEDS_URL = "https://live.orcasound.net/api/json/feeds"
 
 
 class OrcasoundAdapter(BaseAdapter):
@@ -57,54 +48,65 @@ class OrcasoundAdapter(BaseAdapter):
         """Fetch hydrophone node status and recent detections.
 
         Extra params:
-            node: specific node name (e.g. 'bush_point')
+            node: specific node slug (e.g. 'bush-point')
         """
         w, s, e, n = bbox
         target_node = params.get("node")
 
+        # Fetch all feeds in a single request
+        try:
+            resp = await self._request("GET", FEEDS_URL)
+            data = resp.json()
+        except Exception as exc:
+            logger.error("Orcasound feeds fetch failed: %s", exc)
+            return []
+
+        feeds = data.get("data", []) if isinstance(data, dict) else data
         observations: list[dict[str, Any]] = []
 
-        # Check which nodes fall within bbox
-        for node_id, node_info in NODES.items():
-            if target_node and node_id != target_node:
+        for feed in feeds:
+            if not isinstance(feed, dict):
                 continue
 
-            lat = node_info["lat"]
-            lon = node_info["lon"]
+            attrs = feed.get("attributes", feed)
+            slug = attrs.get("slug", "")
+            node_name = attrs.get("node_name", slug)
 
+            if target_node and slug != target_node:
+                continue
+
+            # Extract coordinates from the API response
+            loc = attrs.get("location_point") or {}
+            lat_lng = attrs.get("lat_lng") or {}
+            coords = loc.get("coordinates")  # [lon, lat]
+            if coords and len(coords) >= 2:
+                lon, lat = float(coords[0]), float(coords[1])
+            elif lat_lng:
+                lon = float(lat_lng.get("lng", 0))
+                lat = float(lat_lng.get("lat", 0))
+            else:
+                continue
+
+            # Filter by bbox
             if not (w <= lon <= e and s <= lat <= n):
                 continue
 
-            # Query node status
-            try:
-                resp = await self._request("GET", f"{BASE_URL}/feeds")
-                data = resp.json()
-            except Exception as exc:
-                logger.warning("Orcasound feeds fetch failed: %s", exc)
-                data = {"data": []}
-
-            feeds = data.get("data", []) if isinstance(data, dict) else data
-            node_status = "unknown"
-
-            for feed in feeds:
-                if not isinstance(feed, dict):
-                    continue
-                attrs = feed.get("attributes", feed)
-                if node_info["name"].lower() in str(attrs.get("name", "")).lower():
-                    node_status = "online" if attrs.get("visible") else "offline"
-                    break
+            visible = attrs.get("visible", False)
+            node_status = "online" if visible else "offline"
 
             observations.append({
                 "obs_type": "physical",
                 "timestamp": datetime.utcnow(),
                 "geometry": {"type": "Point", "coordinates": [lon, lat]},
-                "source_id": f"orcasound-{node_id}",
+                "source_id": f"orcasound-{slug or feed.get('id', '')}",
                 "source_name": "Orcasound",
                 "quality_score": 0.85,
                 "payload": {
-                    "node_name": node_info["name"],
-                    "node_id": node_id,
+                    "node_name": attrs.get("name", ""),
+                    "node_id": node_name,
+                    "slug": slug,
                     "status": node_status,
+                    "bucket": attrs.get("bucket", ""),
                     "species_monitored": "Orcinus orca (Southern Resident Killer Whale)",
                     "stream_type": "HLS audio",
                     "sample_rate_hz": 48000,

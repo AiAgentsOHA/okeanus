@@ -4,15 +4,18 @@
 CTD sensors (temperature, salinity, pressure), ADCP currents,
 hydrophones, oxygen sensors, and more.
 
-API docs: https://data.oceannetworks.ca/OpenAPI
+API docs: https://wiki.oceannetworks.ca/display/O2A/Oceans+3.0+API+Home
 Note: Requires a free token from https://data.oceannetworks.ca/
 """
 
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime
 from typing import Any
+
+import httpx
 
 from okeanus.adapters.base import BaseAdapter
 
@@ -22,13 +25,25 @@ BASE_URL = "https://data.oceannetworks.ca/api"
 
 
 class OncAdapter(BaseAdapter):
-    """Connector for Ocean Networks Canada Oceans 3.0 API."""
+    """Connector for Ocean Networks Canada Oceans 3.0 API.
+
+    The ONC API is a REST service.  Discovery endpoints
+    (/locations, /deviceCategories, /properties) return lists
+    filtered by query parameters.  The /scalardata/location
+    endpoint returns time-series sensor readings for a given
+    location + device category + time range.
+
+    Note: The /locations endpoint does **not** support spatial
+    (bbox) filtering server-side, so we fetch all locations for
+    the requested device category and filter by lat/lon
+    client-side.
+    """
 
     def __init__(
         self, *, api_token: str = "", **kwargs: Any,
     ) -> None:
         super().__init__(requests_per_second=1.0, **kwargs)
-        self._api_token = api_token
+        self._api_token = api_token or os.environ.get("ONC_API_TOKEN", "")
 
     @property
     def source_name(self) -> str:
@@ -45,8 +60,17 @@ class OncAdapter(BaseAdapter):
     async def list_locations(
         self,
         bbox: tuple[float, float, float, float] | None = None,
+        device_category: str = "HYDROPHONE",
     ) -> list[dict[str, Any]]:
-        """List ONC deployment locations, filtered by bbox."""
+        """List ONC deployment locations, filtered by bbox.
+
+        Parameters
+        ----------
+        bbox:
+            (min_lon, min_lat, max_lon, max_lat) — client-side filter.
+        device_category:
+            ONC device category code (default ``HYDROPHONE``).
+        """
         if not self._api_token:
             logger.warning(
                 "ONC adapter requires api_token"
@@ -55,9 +79,8 @@ class OncAdapter(BaseAdapter):
             return []
 
         params: dict[str, Any] = {
-            "method": "get",
             "token": self._api_token,
-            "deviceCategoryCode": "HYDROPHONE",
+            "deviceCategoryCode": device_category,
         }
 
         try:
@@ -75,8 +98,10 @@ class OncAdapter(BaseAdapter):
             w, s, e, n = bbox
             locations = [
                 loc for loc in locations
-                if (s <= loc.get("lat", 0) <= n
-                    and w <= loc.get("lon", 0) <= e)
+                if loc.get("lat") is not None
+                and loc.get("lon") is not None
+                and s <= loc["lat"] <= n
+                and w <= loc["lon"] <= e
             ]
 
         return locations
@@ -121,7 +146,6 @@ class OncAdapter(BaseAdapter):
             lon = loc.get("lon", 0.0)
 
             data_params: dict[str, Any] = {
-                "method": "getByLocation",
                 "token": self._api_token,
                 "locationCode": loc_code,
                 "deviceCategoryCode": device_category,
@@ -135,11 +159,27 @@ class OncAdapter(BaseAdapter):
             }
 
             try:
-                resp = await self._request(
-                    "GET",
-                    f"{BASE_URL}/scalardata",
-                    params=data_params,
-                )
+                # Use a raw httpx call so we can handle 400
+                # (no deployment in time range) without triggering
+                # the base-class retry loop.
+                async with httpx.AsyncClient(
+                    timeout=self._timeout,
+                    follow_redirects=True,
+                ) as client:
+                    await self._rate_limit()
+                    resp = await client.get(
+                        f"{BASE_URL}/scalardata/location",
+                        params=data_params,
+                    )
+                if resp.status_code == 400:
+                    # Error 127: device deployed but not in
+                    # this time range -- skip silently.
+                    logger.debug(
+                        "ONC %s: no %s data in time range",
+                        loc_code, device_category,
+                    )
+                    continue
+                resp.raise_for_status()
                 data = resp.json()
             except Exception as exc:
                 logger.warning(
@@ -204,9 +244,13 @@ class OncAdapter(BaseAdapter):
         bbox: tuple[float, float, float, float],
         device_category: str,
     ) -> list[dict[str, Any]]:
-        """Find ONC locations in bbox with the given device."""
+        """Find ONC locations in bbox with the given device.
+
+        The ONC /locations endpoint does not support server-side
+        bbox filtering, so we fetch all locations for the device
+        category and filter client-side by lat/lon.
+        """
         params: dict[str, Any] = {
-            "method": "get",
             "token": self._api_token,
             "deviceCategoryCode": device_category,
         }

@@ -58,13 +58,29 @@ class ArgopyAdapter(BaseAdapter):
 
         w, s, e, n = bbox
 
+        # --- Constrain query to avoid timeout ---
+        # 1. Shrink bbox to max 5 degrees on each side
+        mid_lon, mid_lat = (w + e) / 2, (s + n) / 2
+        half = 2.5
+        w2 = max(w, mid_lon - half)
+        e2 = min(e, mid_lon + half)
+        s2 = max(s, mid_lat - half)
+        n2 = min(n, mid_lat + half)
+        # 2. Limit time range to last 30 days
+        from datetime import timedelta
+        max_window = timedelta(days=30)
+        if (time_end - time_start) > max_window:
+            time_start = time_end - max_window
+        # 3. Limit depth to 500m (surface profiles)
+        max_depth = 500
+
         try:
             fetcher = argopy.DataFetcher(
                 src="argovis",
                 ds=dataset,
             ).region(
-                [w, e, s, n, 0, 2000],  # lon_min, lon_max, lat_min, lat_max, depth_min, depth_max
-                [time_start.strftime("%Y-%m-%d"), time_end.strftime("%Y-%m-%d")],
+                [w2, e2, s2, n2, 0, max_depth,
+                 time_start.strftime("%Y-%m-%d"), time_end.strftime("%Y-%m-%d")],
             )
             ds = fetcher.to_xarray()
         except Exception as exc:

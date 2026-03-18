@@ -4,11 +4,13 @@ Sister database to FishBase covering marine invertebrates including
 molluscs, crustaceans, echinoderms, and other non-fish marine species.
 No auth required.
 
-API docs: https://docs.ropensci.org/rfishbase/
+Data source: HuggingFace (cboettig/sealifebase) species parquet table.
+The legacy REST API at fishbase.ropensci.org is no longer available.
 """
 
 from __future__ import annotations
 
+import io
 import logging
 from datetime import datetime
 from typing import Any
@@ -17,18 +19,22 @@ from okeanus.adapters.base import BaseAdapter
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://fishbase.rstudio.com"
+# Direct parquet URL for the species table on HuggingFace
+SPECIES_PARQUET_URL = (
+    "https://huggingface.co/datasets/cboettig/fishbase/resolve/main"
+    "/data/slb/v25.04/parquet/species.parquet"
+)
 
 
 class SeaLifeBaseAdapter(BaseAdapter):
-    """Connector for SeaLifeBase REST API (no auth required).
+    """Connector for SeaLifeBase via HuggingFace parquet files (no auth required).
 
-    Uses the same API infrastructure as FishBase but queries the
-    SeaLifeBase database path for invertebrate records.
+    Downloads the species parquet table and returns species metadata.
+    Not a spatial observation source -- returns species trait data.
     """
 
     def __init__(self, **kwargs: Any) -> None:
-        super().__init__(requests_per_second=2.0, **kwargs)
+        super().__init__(requests_per_second=2.0, timeout=60.0, **kwargs)
 
     @property
     def source_name(self) -> str:
@@ -36,7 +42,7 @@ class SeaLifeBaseAdapter(BaseAdapter):
 
     @property
     def source_url(self) -> str:
-        return BASE_URL
+        return "https://www.sealifebase.org/"
 
     @property
     def update_frequency(self) -> str:
@@ -49,55 +55,40 @@ class SeaLifeBaseAdapter(BaseAdapter):
         time_end: datetime,
         **params: Any,
     ) -> list[dict[str, Any]]:
-        """Search for marine invertebrate species matching criteria.
+        """Fetch marine invertebrate species data from SeaLifeBase parquet on HuggingFace.
 
         Extra params:
-            genus: Genus name (e.g. 'Octopus')
-            species: Species name (e.g. 'vulgaris')
-            family: Family name (e.g. 'Octopodidae')
-            order: Order name (e.g. 'Octopoda')
-            limit: Max results (default 100)
+            limit: max records (default 100)
         """
         limit = params.get("limit", 100)
 
-        api_params: dict[str, Any] = {
-            "limit": limit,
-            "offset": 0,
-        }
-        if genus := params.get("genus"):
-            api_params["Genus"] = genus
-        if species := params.get("species"):
-            api_params["Species"] = species
-        if family := params.get("family"):
-            api_params["Family"] = family
-        if order := params.get("order"):
-            api_params["Order"] = order
-
-        endpoint = f"{BASE_URL}/sealifebase/species"
-
         try:
-            resp = await self._request("GET", endpoint, params=api_params)
-            data = resp.json()
-        except Exception as exc:
-            logger.error("SeaLifeBase fetch failed: %s", exc)
+            import pyarrow.parquet as pq
+        except ImportError:
+            logger.error("pyarrow not installed: pip install pyarrow")
             return []
 
-        results = data.get("data", data) if isinstance(data, dict) else data
-        if not isinstance(results, list):
-            results = [results] if results else []
+        try:
+            resp = await self._request("GET", SPECIES_PARQUET_URL)
+            table = pq.read_table(io.BytesIO(resp.content))
+        except Exception as exc:
+            logger.error("SeaLifeBase parquet fetch failed: %s", exc)
+            return []
+
+        df = table.to_pandas()
+        if len(df) > limit:
+            df = df.head(limit)
+
+        w, s, e, n = bbox
+        lon = (w + e) / 2
+        lat = (s + n) / 2
 
         observations: list[dict[str, Any]] = []
-        w, s, e, n = bbox
-
-        for rec in results:
-            if not isinstance(rec, dict):
-                continue
-
+        for _, rec in df.iterrows():
             spec_code = rec.get("SpecCode", "")
-            sci_name = f"{rec.get('Genus', '')} {rec.get('Species', '')}".strip()
-
-            lon = (w + e) / 2
-            lat = (s + n) / 2
+            genus = str(rec.get("Genus", "") or "")
+            species = str(rec.get("Species", "") or "")
+            sci_name = f"{genus} {species}".strip()
 
             observations.append({
                 "obs_type": "biological",
@@ -108,18 +99,18 @@ class SeaLifeBaseAdapter(BaseAdapter):
                 "quality_score": 0.9,
                 "payload": {
                     "scientific_name": sci_name,
-                    "genus": rec.get("Genus", ""),
-                    "species": rec.get("Species", ""),
-                    "family": rec.get("Family", ""),
-                    "order": rec.get("Order", ""),
-                    "class": rec.get("Class", ""),
-                    "common_name": rec.get("FBname", ""),
+                    "genus": genus,
+                    "species": species,
+                    "family": str(rec.get("Family", "") or ""),
+                    "order": str(rec.get("Order", "") or ""),
+                    "class": str(rec.get("Class", "") or ""),
+                    "common_name": str(rec.get("FBname", "") or ""),
                     "max_length_cm": rec.get("Length"),
                     "max_weight_kg": rec.get("Weight"),
                     "depth_range_shallow": rec.get("DepthRangeShallow"),
                     "depth_range_deep": rec.get("DepthRangeDeep"),
-                    "importance": rec.get("Importance", ""),
-                    "dangerous": rec.get("Dangerous", ""),
+                    "importance": str(rec.get("Importance", "") or ""),
+                    "dangerous": str(rec.get("Dangerous", "") or ""),
                 },
             })
 

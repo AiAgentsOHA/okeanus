@@ -5,12 +5,16 @@ open data portal via SODA API.
 
 API: SODA (Socrata Open Data API) at agtransport.usda.gov.
 Free app token recommended but not required.
+
+Dataset 4v3x-mj86: daily bunker fuel prices (VLSFO, MGO, IFO 380).
+Columns: day, vlsfo_fuel_oil_imo_2020_grade_0_5, marine_gas_oil,
+         intermdiate_fuel_oil_380cst, month, year.
 """
 
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from okeanus.adapters.base import BaseAdapter
@@ -19,11 +23,11 @@ logger = logging.getLogger(__name__)
 
 BASE_URL = "https://agtransport.usda.gov/resource"
 
-# Known dataset identifiers for bunker/transportation fuel
-DATASETS = {
-    "bunker_fuel": "daily bunker fuel prices",
-    "ocean_rates": "ocean freight rates for grains",
-    "inland_barge": "inland barge freight rates",
+# Fuel price columns in dataset 4v3x-mj86
+FUEL_COLUMNS = {
+    "vlsfo_fuel_oil_imo_2020_grade_0_5": "VLSFO (IMO 2020)",
+    "marine_gas_oil": "Marine Gas Oil (MGO)",
+    "intermdiate_fuel_oil_380cst": "IFO 380",
 }
 
 
@@ -66,30 +70,22 @@ class UsdaBunkerAdapter(BaseAdapter):
         """Fetch USDA bunker/transport fuel prices.
 
         Extra params:
-            dataset_id: Socrata dataset 4-4 identifier
-            fuel_type: filter by fuel type
+            dataset_id: Socrata dataset 4-4 identifier (default: 4v3x-mj86)
             limit: max records (default: 1000)
         """
-        dataset_id = params.get("dataset_id", "bxe3-k54q")
-        fuel_type = params.get("fuel_type")
+        dataset_id = params.get("dataset_id", "4v3x-mj86")
         limit = params.get("limit", 1000)
 
         url = f"{BASE_URL}/{dataset_id}.json"
 
-        # Build SoQL query
-        where_clauses = []
+        # Build SoQL query — date column is "day" in 4v3x-mj86
         start_str = time_start.strftime("%Y-%m-%dT00:00:00")
         end_str = time_end.strftime("%Y-%m-%dT23:59:59")
-        where_clauses.append(f"date >= '{start_str}'")
-        where_clauses.append(f"date <= '{end_str}'")
-
-        if fuel_type:
-            where_clauses.append(f"fuel_type = '{fuel_type}'")
 
         query: dict[str, Any] = {
-            "$where": " AND ".join(where_clauses),
+            "$where": f"day >= '{start_str}' AND day <= '{end_str}'",
             "$limit": limit,
-            "$order": "date DESC",
+            "$order": "day DESC",
         }
 
         try:
@@ -110,46 +106,46 @@ class UsdaBunkerAdapter(BaseAdapter):
             if not isinstance(rec, dict):
                 continue
 
-            # SODA returns various field naming conventions
-            date_str = rec.get("date") or rec.get("Date") or rec.get("report_date")
-            price = (
-                rec.get("price") or rec.get("Price")
-                or rec.get("bunker_price") or rec.get("value")
-            )
-
-            if price is None or date_str is None:
+            date_str = rec.get("day")
+            if not date_str:
                 continue
 
             try:
-                val = float(price)
-                # Handle ISO datetime or date-only
                 date_clean = str(date_str)[:10]
-                ts = datetime.strptime(date_clean, "%Y-%m-%d")
+                ts = datetime.strptime(date_clean, "%Y-%m-%d").replace(
+                    tzinfo=timezone.utc
+                )
             except (ValueError, TypeError):
                 continue
 
             if ts < time_start or ts > time_end:
                 continue
 
-            ft = rec.get("fuel_type") or rec.get("product") or fuel_type or ""
-            port = rec.get("port") or rec.get("location") or rec.get("hub") or ""
+            # Emit one observation per fuel type per day
+            for col, label in FUEL_COLUMNS.items():
+                price_str = rec.get(col)
+                if price_str is None:
+                    continue
+                try:
+                    val = float(price_str)
+                except (ValueError, TypeError):
+                    continue
 
-            observations.append({
-                "obs_type": "economic",
-                "timestamp": ts,
-                "geometry": {"type": "Point", "coordinates": [-98.5, 39.8]},
-                "source_id": f"usda-bunker-{ft}-{port}-{date_clean}",
-                "source_name": "USDA AgTransport",
-                "quality_score": 0.90,
-                "payload": {
-                    "fuel_type": ft,
-                    "port": port,
-                    "price_usd": val,
-                    "unit": rec.get("unit") or rec.get("units") or "USD/mt",
-                    "date": date_clean,
-                    "source_report": rec.get("source") or rec.get("report_name", ""),
-                },
-            })
+                observations.append({
+                    "obs_type": "economic",
+                    "timestamp": ts,
+                    "geometry": {"type": "Point", "coordinates": [-74.0, 40.7]},
+                    "source_id": f"usda-bunker-{col}-{date_clean}",
+                    "source_name": "USDA AgTransport",
+                    "quality_score": 0.90,
+                    "payload": {
+                        "fuel_type": label,
+                        "price_usd_per_mt": val,
+                        "date": date_clean,
+                        "month": rec.get("month", ""),
+                        "year": rec.get("year", ""),
+                    },
+                })
 
         logger.info("USDA bunker returned %d price records", len(observations))
         return observations

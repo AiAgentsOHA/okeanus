@@ -1,9 +1,12 @@
 """FAO Global Fisheries Statistics adapter — capture and aquaculture data.
 
-FAO FIRMS (Fisheries and Resources Monitoring System) provides stock
-status assessments and fisheries statistics. No auth required.
+FAO provides global fisheries and aquaculture production statistics
+via the FishStatJ platform and WFS GeoServer.
 
-Data source: https://firms.fao.org/
+The FAO GeoServer provides fishery statistical areas (FAO major
+fishing areas 18/27/34/etc) and associated catch data.
+
+Data source: https://www.fao.org/fishery/
 """
 
 from __future__ import annotations
@@ -16,17 +19,22 @@ from okeanus.adapters.base import BaseAdapter
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://firms.fao.org/firms/stocks/search/json"
+# FAO GeoServer for fishery areas
+WFS_URL = "https://www.fao.org/fishery/geoserver/fifao/ows"
+
+# FAO SDG indicator API (fisheries sustainability)
+SDG_URL = "https://unstats.un.org/sdgapi/v1/sdg/Indicator/Data"
 
 
 class FaoFisheriesAdapter(BaseAdapter):
-    """Connector for FAO FIRMS fisheries stock data (no auth required).
+    """Connector for FAO fishery area data via WFS (no auth required).
 
-    Returns stock assessments with species, area, and status information.
+    Returns FAO major fishing area boundaries and metadata via
+    the FAO Fisheries GeoServer WFS endpoint.
     """
 
     def __init__(self, **kwargs: Any) -> None:
-        super().__init__(requests_per_second=1.0, **kwargs)
+        super().__init__(requests_per_second=1.0, timeout=60.0, **kwargs)
 
     @property
     def source_name(self) -> str:
@@ -34,7 +42,7 @@ class FaoFisheriesAdapter(BaseAdapter):
 
     @property
     def source_url(self) -> str:
-        return "https://firms.fao.org/"
+        return "https://www.fao.org/fishery/"
 
     @property
     def update_frequency(self) -> str:
@@ -47,70 +55,88 @@ class FaoFisheriesAdapter(BaseAdapter):
         time_end: datetime,
         **params: Any,
     ) -> list[dict[str, Any]]:
-        """Fetch fisheries stock assessments.
+        """Fetch FAO fishery area data via WFS.
 
         Extra params:
-            species: species common or scientific name
-            area: FAO fishing area code (e.g. '27' for NE Atlantic)
-            limit: Max records (default 200)
+            layer: WFS layer (default 'fifao:FAO_MAJOR')
+                Options: 'fifao:FAO_MAJOR' (major fishing areas),
+                         'fifao:FAO_SUB_AREA', 'fifao:FAO_DIV'
+            limit: max records (default 500)
         """
-        limit = params.get("limit", 200)
         w, s, e, n = bbox
+        limit = params.get("limit", 500)
+        layer = params.get("layer", "fifao:FAO_MAJOR")
 
-        query_params: dict[str, Any] = {}
-        if species := params.get("species"):
-            query_params["species"] = species
-        if area := params.get("area"):
-            query_params["area"] = area
+        wfs_params: dict[str, Any] = {
+            "service": "WFS",
+            "version": "1.0.0",
+            "request": "GetFeature",
+            "typeName": layer,
+            "outputFormat": "application/json",
+            "maxFeatures": limit,
+            "bbox": f"{s},{w},{n},{e}",
+        }
 
         try:
-            resp = await self._request("GET", BASE_URL, params=query_params)
+            resp = await self._request("GET", WFS_URL, params=wfs_params)
             data = resp.json()
         except Exception as exc:
-            logger.error("FAO Fisheries fetch failed: %s", exc)
+            logger.error("FAO Fisheries WFS fetch failed: %s", exc)
             return []
 
-        results = data if isinstance(data, list) else data.get("stocks", data.get("results", []))
-        if not isinstance(results, list):
-            results = []
-
+        features = data.get("features", [])
         observations: list[dict[str, Any]] = []
-        lon_center = (w + e) / 2
-        lat_center = (s + n) / 2
 
-        for rec in results[:limit]:
-            if not isinstance(rec, dict):
+        for feat in features:
+            props = feat.get("properties", {})
+            geom = feat.get("geometry", {})
+
+            # Compute centroid
+            lon, lat = _centroid(geom)
+            if lon is None or lat is None:
                 continue
 
-            stock_id = rec.get("stock_id", rec.get("id", ""))
-            year = rec.get("year") or rec.get("assessment_year")
-            try:
-                ts = datetime(int(year), 1, 1) if year else datetime.now()
-            except (ValueError, TypeError):
-                ts = datetime.now()
-
-            if ts < time_start or ts > time_end:
-                continue
+            area_name = props.get("NAME_EN") or props.get("LABEL") or ""
+            area_code = props.get("F_CODE") or props.get("F_AREA") or ""
+            ocean = props.get("OCEAN") or props.get("ocean", "")
 
             observations.append({
-                "obs_type": "biological",
-                "timestamp": ts,
-                "geometry": {"type": "Point", "coordinates": [lon_center, lat_center]},
-                "source_id": f"fao-stock-{stock_id}",
-                "source_name": "FAO FIRMS",
-                "quality_score": 0.9,
+                "obs_type": "governance",
+                "timestamp": time_start,
+                "geometry": {"type": "Point", "coordinates": [lon, lat]},
+                "source_id": f"fao-area-{area_code}",
+                "source_name": "FAO Fisheries",
+                "quality_score": 0.95,
                 "payload": {
-                    "species": rec.get("species", rec.get("scientific_name", "")),
-                    "common_name": rec.get("english_name", rec.get("common_name", "")),
-                    "area": rec.get("area", rec.get("fao_area", "")),
-                    "stock_status": rec.get("status", rec.get("stock_status", "")),
-                    "exploitation_rate": rec.get("exploitation_rate"),
-                    "biomass": rec.get("biomass"),
-                    "management_body": rec.get("management_body", ""),
-                    "year": year,
-                    "catch_tonnes": rec.get("catch", rec.get("landings")),
+                    "area_name": area_name,
+                    "area_code": str(area_code),
+                    "ocean": ocean,
+                    "area_type": props.get("F_LEVEL", ""),
+                    "status": props.get("F_STATUS", ""),
                 },
             })
 
-        logger.info("FAO Fisheries returned %d stock records", len(observations))
+        logger.info("FAO Fisheries returned %d areas", len(observations))
         return observations
+
+
+def _centroid(geom: dict[str, Any]) -> tuple[float | None, float | None]:
+    """Extract representative point from GeoJSON geometry."""
+    gtype = geom.get("type", "")
+    coords = geom.get("coordinates")
+    if not coords:
+        return None, None
+
+    if gtype == "Point":
+        return float(coords[0]), float(coords[1])
+    elif gtype == "Polygon":
+        ring = coords[0]
+        lon = sum(pt[0] for pt in ring) / len(ring)
+        lat = sum(pt[1] for pt in ring) / len(ring)
+        return lon, lat
+    elif gtype == "MultiPolygon":
+        ring = coords[0][0]
+        lon = sum(pt[0] for pt in ring) / len(ring)
+        lat = sum(pt[1] for pt in ring) / len(ring)
+        return lon, lat
+    return None, None

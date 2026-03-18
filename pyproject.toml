@@ -36,6 +36,7 @@ ml = [
     "sentence-transformers>=3.0",
     "pgvector>=0.3",
     "scikit-learn>=1.5",
+    "scipy>=1.10",
     "networkx>=3.0",
 ]
 dev = [

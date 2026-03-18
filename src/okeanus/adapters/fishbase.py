@@ -1,13 +1,15 @@
-"""FishBase adapter — fish species traits and distribution data.
+"""FishBase adapter -- fish species traits and distribution data.
 
 35K+ fish species with ecology, morphology, distribution, and trait data.
 No auth required.
 
-API docs: https://docs.ropensci.org/rfishbase/
+Data source: HuggingFace (cboettig/fishbase) species parquet table.
+The legacy REST API at fishbase.ropensci.org is no longer available.
 """
 
 from __future__ import annotations
 
+import io
 import logging
 from datetime import datetime
 from typing import Any
@@ -16,18 +18,22 @@ from okeanus.adapters.base import BaseAdapter
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://fishbase.rstudio.com"
+# Direct parquet URL for the species table on HuggingFace
+SPECIES_PARQUET_URL = (
+    "https://huggingface.co/datasets/cboettig/fishbase/resolve/main"
+    "/data/fb/v25.04/parquet/species.parquet"
+)
 
 
 class FishBaseAdapter(BaseAdapter):
-    """Connector for FishBase REST API (no auth required).
+    """Connector for FishBase via HuggingFace parquet files (no auth required).
 
-    Provides species trait lookups and country-level distribution data.
-    Not a spatial observation source — returns species metadata.
+    Downloads the species parquet table and returns species metadata.
+    Not a spatial observation source -- returns species trait data.
     """
 
     def __init__(self, **kwargs: Any) -> None:
-        super().__init__(requests_per_second=2.0, **kwargs)
+        super().__init__(requests_per_second=2.0, timeout=60.0, **kwargs)
 
     @property
     def source_name(self) -> str:
@@ -35,7 +41,7 @@ class FishBaseAdapter(BaseAdapter):
 
     @property
     def source_url(self) -> str:
-        return BASE_URL
+        return "https://www.fishbase.org/"
 
     @property
     def update_frequency(self) -> str:
@@ -48,58 +54,41 @@ class FishBaseAdapter(BaseAdapter):
         time_end: datetime,
         **params: Any,
     ) -> list[dict[str, Any]]:
-        """Search for fish species matching criteria.
-
-        Since FishBase is a species database (not spatial observations),
-        bbox is used to filter by country-level distribution, not exact coords.
+        """Fetch fish species data from FishBase parquet on HuggingFace.
 
         Extra params:
-            genus: Genus name (e.g. 'Thunnus')
-            species: Species name (e.g. 'thynnus')
-            family: Family name (e.g. 'Scombridae')
-            query: Free-text species search
-            database: 'fishbase' (default) or 'sealifebase' (invertebrates)
+            limit: max records (default 100)
         """
         limit = params.get("limit", 100)
-        database = params.get("database", "fishbase")
-
-        api_params: dict[str, Any] = {
-            "limit": limit,
-            "offset": 0,
-        }
-        if genus := params.get("genus"):
-            api_params["Genus"] = genus
-        if species := params.get("species"):
-            api_params["Species"] = species
-        if family := params.get("family"):
-            api_params["Family"] = family
-
-        endpoint = f"{BASE_URL}/{database}/species"
 
         try:
-            resp = await self._request("GET", endpoint, params=api_params)
-            data = resp.json()
-        except Exception as exc:
-            logger.error("FishBase fetch failed: %s", exc)
+            import pyarrow.parquet as pq
+        except ImportError:
+            logger.error("pyarrow not installed: pip install pyarrow")
             return []
 
-        results = data.get("data", data) if isinstance(data, dict) else data
-        if not isinstance(results, list):
-            results = [results] if results else []
+        try:
+            resp = await self._request("GET", SPECIES_PARQUET_URL)
+            table = pq.read_table(io.BytesIO(resp.content))
+        except Exception as exc:
+            logger.error("FishBase parquet fetch failed: %s", exc)
+            return []
+
+        df = table.to_pandas()
+        # Take a sample up to limit
+        if len(df) > limit:
+            df = df.head(limit)
+
+        w, s, e, n = bbox
+        lon = (w + e) / 2
+        lat = (s + n) / 2
 
         observations: list[dict[str, Any]] = []
-        w, s, e, n = bbox
-
-        for rec in results:
-            if not isinstance(rec, dict):
-                continue
-
+        for _, rec in df.iterrows():
             spec_code = rec.get("SpecCode", "")
-            sci_name = f"{rec.get('Genus', '')} {rec.get('Species', '')}".strip()
-
-            # Use bbox centroid as approximate location
-            lon = (w + e) / 2
-            lat = (s + n) / 2
+            genus = str(rec.get("Genus", "") or "")
+            species = str(rec.get("Species", "") or "")
+            sci_name = f"{genus} {species}".strip()
 
             observations.append({
                 "obs_type": "biological",
@@ -110,20 +99,18 @@ class FishBaseAdapter(BaseAdapter):
                 "quality_score": 0.9,
                 "payload": {
                     "scientific_name": sci_name,
-                    "genus": rec.get("Genus", ""),
-                    "species": rec.get("Species", ""),
-                    "family": rec.get("Family", ""),
-                    "order": rec.get("Order", ""),
-                    "class": rec.get("Class", ""),
-                    "common_name": rec.get("FBname", ""),
-                    "environment": rec.get("BodyShapeI", ""),
-                    "max_length_cm": rec.get("Length"),
-                    "max_weight_kg": rec.get("Weight"),
+                    "genus": genus,
+                    "species": species,
+                    "common_name": str(rec.get("FBname", "") or ""),
+                    "spec_code": int(spec_code) if spec_code else None,
+                    "body_shape": str(rec.get("BodyShapeI", "") or ""),
                     "vulnerability": rec.get("Vulnerability"),
-                    "importance": rec.get("Importance", ""),
+                    "importance": str(rec.get("Importance", "") or ""),
                     "depth_range_shallow": rec.get("DepthRangeShallow"),
                     "depth_range_deep": rec.get("DepthRangeDeep"),
-                    "dangerous": rec.get("Dangerous", ""),
+                    "dangerous": str(rec.get("Dangerous", "") or ""),
+                    "freshwater": bool(rec.get("Fresh")),
+                    "saltwater": bool(rec.get("Saltwater")),
                 },
             })
 

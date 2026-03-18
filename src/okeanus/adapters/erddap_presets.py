@@ -33,6 +33,19 @@ IMOS = "https://thredds.aodn.org.au/thredds/erddap"
 CIOOS_PACIFIC = "https://data.cioospacific.ca/erddap"
 HYCOM = "https://ncss.hycom.org/thredds"
 NSIDC = "https://nsidc.org/erddap"
+# Additional ERDDAP servers
+MARINE_IE = "https://erddap.marine.ie/erddap"
+PIFSC = "https://oceanwatch.pifsc.noaa.gov/erddap"
+MEDS_CA = "https://meds-sdmm.dfo-mpo.gc.ca/erddap"
+APDRC = "http://apdrc.soest.hawaii.edu/erddap"
+SCCOOS = "https://erddap.sccoos.org/erddap"
+CENCOOS = "https://erddap.cencoos.org/erddap"
+NERACOOS = "https://www.neracoos.org/erddap"
+GCOOS = "https://erddap.gcoos.org/erddap"
+SECOORA = "https://erddap.secoora.org/erddap"
+NANOOS = "https://data.nanoos.org/erddap"
+AOOS = "https://erddap.aoos.org/erddap"
+PACIOOS = "https://pae-paha.pacioos.hawaii.edu/erddap"
 
 
 @dataclass(frozen=True)
@@ -513,6 +526,107 @@ PRESETS: dict[str, ErddapPreset] = {
         server=NCEI,
         dataset_id="nodc_woa18_s_an01_04",
         variables="latitude,longitude,depth,s_an",
+        category="physical",
+    ),
+    # ------------------------------------------------------------------
+    # Wave 6 additions — Session 27: IOOS Regional + International
+    # ------------------------------------------------------------------
+    # --- IOOS Regional Associations ---
+    "sccoos": ErddapPreset(
+        name="SCCOOS Southern California",
+        description="Southern California Coastal Ocean Observing System",
+        server=SCCOOS,
+        dataset_id="allDatasets",
+        variables="",
+        category="physical",
+    ),
+    "cencoos": ErddapPreset(
+        name="CeNCOOS Central California",
+        description="Central & Northern California Ocean Observing System",
+        server=CENCOOS,
+        dataset_id="allDatasets",
+        variables="",
+        category="physical",
+    ),
+    "neracoos": ErddapPreset(
+        name="NERACOOS Northeast US",
+        description="Northeastern Regional Assoc. of Coastal Ocean Observing Systems",
+        server=NERACOOS,
+        dataset_id="allDatasets",
+        variables="",
+        category="physical",
+    ),
+    "gcoos": ErddapPreset(
+        name="GCOOS Gulf of Mexico",
+        description="Gulf of Mexico Coastal Ocean Observing System",
+        server=GCOOS,
+        dataset_id="allDatasets",
+        variables="",
+        category="physical",
+    ),
+    "secoora": ErddapPreset(
+        name="SECOORA Southeast US",
+        description="Southeast Coastal Ocean Observing Regional Association",
+        server=SECOORA,
+        dataset_id="allDatasets",
+        variables="",
+        category="physical",
+    ),
+    "nanoos": ErddapPreset(
+        name="NANOOS Pacific Northwest",
+        description="Northwest Association of Networked Ocean Observing Systems",
+        server=NANOOS,
+        dataset_id="allDatasets",
+        variables="",
+        category="physical",
+    ),
+    "aoos": ErddapPreset(
+        name="AOOS Alaska",
+        description="Alaska Ocean Observing System",
+        server=AOOS,
+        dataset_id="allDatasets",
+        variables="",
+        category="physical",
+    ),
+    "pacioos": ErddapPreset(
+        name="PacIOOS Pacific Islands",
+        description="Pacific Islands Ocean Observing System (Hawaii, Guam, etc.)",
+        server=PACIOOS,
+        dataset_id="allDatasets",
+        variables="",
+        category="physical",
+    ),
+    # --- International ERDDAP servers ---
+    "marine_ie": ErddapPreset(
+        name="Irish Marine Institute",
+        description="Irish Marine Institute ocean observations (Celtic Sea, Atlantic)",
+        server=MARINE_IE,
+        dataset_id="allDatasets",
+        variables="",
+        category="physical",
+    ),
+    "pifsc_oceanwatch": ErddapPreset(
+        name="NOAA PIFSC OceanWatch",
+        description="Pacific Islands Fisheries Science Center satellite data",
+        server=PIFSC,
+        dataset_id="allDatasets",
+        variables="",
+        category="satellite",
+    ),
+    "meds_canada": ErddapPreset(
+        name="DFO MEDS Canada",
+        description="Canadian Dept. of Fisheries & Oceans marine environmental data",
+        server=MEDS_CA,
+        dataset_id="allDatasets",
+        variables="",
+        category="physical",
+    ),
+    "apdrc_hawaii": ErddapPreset(
+        name="APDRC Asia-Pacific",
+        description="Asia-Pacific Data Research Center (IPRC, U Hawaii)",
+        server=APDRC,
+        dataset_id="allDatasets",
+        variables="",
         category="physical",
     ),
 }

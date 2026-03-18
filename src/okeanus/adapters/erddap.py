@@ -18,10 +18,46 @@ logger = logging.getLogger(__name__)
 
 # Well-known ERDDAP servers
 SERVERS = {
+    # --- Original ---
     "coastwatch": "https://coastwatch.pfeg.noaa.gov/erddap",
     "ioos_gliders": "https://gliders.ioos.us/erddap",
     "osmc": "https://osmc.noaa.gov/erddap",
     "noaa_ncei": "https://www.ncei.noaa.gov/erddap",
+    # --- NOAA Regional ---
+    "pifsc_sst": "https://oceanwatch.pifsc.noaa.gov/erddap",
+    "coops_tides": "https://opendap.co-ops.nos.noaa.gov/erddap",
+    "polarwatch": "https://polarwatch.noaa.gov/erddap",
+    "noaa_uaf": "https://upwell.pfeg.noaa.gov/erddap",
+    "nefsc_shelf": "https://comet.nefsc.noaa.gov/erddap",
+    "aoml_caribbean": "https://cwcgom.aoml.noaa.gov/erddap",
+    # --- IOOS Regional Associations ---
+    "ioos_sensors": "https://erddap.sensors.ioos.us/erddap",
+    "cencoos": "http://erddap.cencoos.org/erddap",
+    "nanoos": "https://erddap.nanoos.org/erddap",
+    "aoos": "https://erddap.aoos.org/erddap",
+    "pacioos": "https://pae-paha.pacioos.hawaii.edu/erddap",
+    "gcoos": "https://erddap.gcoos.org/erddap",
+    "secoora": "http://erddap.secoora.org/erddap",
+    "neracoos": "https://data.neracoos.org/erddap",
+    "atn_telemetry": "https://atn.ioos.us/erddap",
+    # --- European ---
+    "emodnet_physics": "https://erddap.emodnet-physics.eu/erddap",
+    "emodnet_chemistry": "https://erddap.emodnet-chemistry.eu/erddap",
+    "emodnet_unified": "https://erddap.emodnet.eu/erddap",
+    "emso_seafloor": "http://erddap.emso.eu/erddap",
+    "marine_institute_ie": "https://erddap.marine.ie/erddap",
+    "bodc_uk": "https://linkedsystems.uk/erddap",
+    # --- International ---
+    "incois_india": "https://erddap.incois.gov.in/erddap",
+    "ooi_cabled": "https://erddap.dataexplorer.oceanobservatories.org/erddap",
+    # --- Specialized ---
+    "apdrc_reanalysis": "https://apdrc.soest.hawaii.edu/erddap",
+    "bco_dmo": "https://erddap.bco-dmo.org/erddap",
+    "bio_oracle": "https://erddap.bio-oracle.org/erddap",
+    "iode_oa": "https://erddap.oa.iode.org/erddap",
+    "usgs_coastal": "https://geoport.usgs.esipfed.org/erddap",
+    "hakai_bc": "https://catalogue.hakai.org/erddap",
+    "spray_gliders": "https://spraydata.ucsd.edu/erddap",
 }
 
 
