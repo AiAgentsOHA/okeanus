@@ -22,9 +22,22 @@ dependencies = [
     "python-dotenv",
     "geojson-pydantic",
     "shapely",
+    "redis[hiredis]",
+    "websockets",
+    "sse-starlette",
+    "PyJWT>=2.8",
+    "passlib[bcrypt]>=1.7",
+    "scrapling",
 ]
 
 [project.optional-dependencies]
+ml = [
+    "anthropic>=0.40",
+    "sentence-transformers>=3.0",
+    "pgvector>=0.3",
+    "scikit-learn>=1.5",
+    "networkx>=3.0",
+]
 dev = [
     "pytest",
     "pytest-asyncio",

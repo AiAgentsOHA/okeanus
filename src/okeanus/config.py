@@ -54,6 +54,54 @@ class Settings(BaseSettings):
     # IUCN Red List (free at apiv3.iucnredlist.org)
     iucn_api_token: str = ""
 
+    # -- ML / LLM --
+    anthropic_api_key: str = ""
+    llm_model: str = "claude-sonnet-4-20250514"
+    llm_max_tokens: int = 4096
+    embedding_model: str = "BAAI/bge-small-en-v1.5"
+    embedding_dim: int = 384
+    graph_auto_build: bool = True
+
+    # -- Investigation --
+    investigation_max_depth: int = 4
+    investigation_max_concurrent_tasks: int = 5
+    investigation_task_timeout_seconds: int = 120
+
+    # -- Auth / JWT --
+    jwt_secret: str = "change-me-in-production-use-a-real-secret"
+    jwt_algorithm: str = "HS256"
+    jwt_expire_minutes: int = 1440  # 24 hours
+    auth_enabled: bool = False  # Future: toggle global auth requirement
+
+    # -- Behavioral analytics --
+    behavioral_window_minutes: int = 30  # trajectory classification window
+    behavioral_step_minutes: int = 15  # sliding window step
+    encounter_distance_nm: float = 0.5  # proximity threshold for encounters
+    encounter_min_duration_minutes: float = 10  # minimum encounter duration
+    voyage_port_sog_threshold: float = 0.5  # SOG below this = in port (knots)
+    voyage_port_min_duration_minutes: float = 60  # minimum port stay duration
+
+    # -- Risk scoring --
+    risk_scoring_enabled: bool = True  # enable composite risk scoring
+    risk_ais_gap_hours: int = 72  # lookback window for AIS gap detection
+    risk_default_weights: str = ""  # JSON override for factor weights (leave empty for defaults)
+
+    # -- Reports --
+    reports_enabled: bool = True  # enable HTML report generation
+
+    # -- Geofence engine --
+    geofence_enabled: bool = True  # enable geofence evaluation
+    geofence_auto_reload: bool = True  # reload zones on startup
+
+    # -- Redis / Streaming --
+    redis_url: str = "redis://localhost:6379/0"
+    ais_stream_enabled: bool = False
+    ais_stream_api_key: str = ""  # separate from ais_api_key which is for REST
+    scheduler_enabled: bool = False
+    websocket_heartbeat_seconds: int = 30
+    ais_batch_flush_seconds: int = 10
+    ais_batch_flush_size: int = 50
+
     # -- Blue Economy API keys --
     # FRED (free at fred.stlouisfed.org)
     fred_api_key: str = ""

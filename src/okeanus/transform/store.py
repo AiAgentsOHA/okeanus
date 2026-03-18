@@ -103,4 +103,19 @@ async def store_transform_result(
         await session.execute(insert(model).values(items))
         counts[name] = len(items)
 
+    # -- Intelligence layer: build knowledge graph edges --
+    try:
+        from okeanus.ml.graph.builder import KnowledgeGraphBuilder
+        from okeanus.config import settings
+        if settings.graph_auto_build:
+            builder = KnowledgeGraphBuilder()
+            edge_count = await builder.build_from_transform(result, session)
+            if edge_count:
+                counts["knowledge_edges"] = edge_count
+    except ImportError:
+        pass  # ml extras not installed
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("Graph builder hook failed: %s", exc)
+
     return counts
