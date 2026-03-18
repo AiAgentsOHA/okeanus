@@ -16,6 +16,8 @@ import okeanus.schema.acoustic  # noqa: F401
 import okeanus.schema.biological  # noqa: F401
 import okeanus.schema.satellite  # noqa: F401
 import okeanus.schema.economy  # noqa: F401
+import okeanus.ml.synthesis.insights  # noqa: F401  -- InsightFeedback model
+import okeanus.ml.graph.models  # noqa: F401
 
 config = context.config
 
