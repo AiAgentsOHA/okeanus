@@ -37,7 +37,7 @@ class IntelligenceScheduler:
             await asyncio.sleep(self._interval)
 
     async def _run_scan(self) -> None:
-        from okeanus.db.session import get_session
+        from okeanus.db.postgres import get_session
         from okeanus.ml.engine.orchestrator import IntelligenceOrchestrator
 
         orchestrator = IntelligenceOrchestrator()

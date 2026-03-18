@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from okeanus.db.session import get_session
+from okeanus.db.postgres import get_session
 
 logger = logging.getLogger(__name__)
 

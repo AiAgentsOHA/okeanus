@@ -6,7 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter
 
-from okeanus.db.session import get_session
+from okeanus.db.postgres import get_session
 from okeanus.ml.engine.orchestrator import IntelligenceOrchestrator
 
 router = APIRouter(prefix="/ml/intelligence", tags=["ml-intelligence"])

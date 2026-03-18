@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import APIRouter
 
 from okeanus.config import settings
-from okeanus.db.session import get_session
+from okeanus.db.postgres import get_session
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/ml/embeddings", tags=["ml"])

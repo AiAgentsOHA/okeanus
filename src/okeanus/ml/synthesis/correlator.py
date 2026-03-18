@@ -28,12 +28,12 @@ class CorrelationEngine:
         Uses the existing DuckDB ts_correlation capability.
         """
         try:
-            from okeanus.db.duckdb import DuckDBAnalytics
-            analytics = DuckDBAnalytics()
-            results = await analytics.ts_correlation(
-                source_a=domain_a,
-                source_b=domain_b,
-                lag_periods=lag_days,
+            import asyncio
+            from functools import partial
+            from okeanus.db.duckdb import ts_correlation
+            results = await asyncio.get_event_loop().run_in_executor(
+                None,
+                partial(ts_correlation, code_a=domain_a, code_b=domain_b),
             )
             return [r for r in results if abs(r.get("correlation", 0)) >= min_correlation]
         except Exception as exc:
