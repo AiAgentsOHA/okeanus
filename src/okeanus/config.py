@@ -116,7 +116,7 @@ class Settings(BaseSettings):
     # ESVD Ecosystem Services (free registration at esvd.info)
     esvd_api_key: str = ""
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
     def configured_sources(self) -> list[dict[str, str | bool]]:
         """Return a list of data sources with their configuration status."""
