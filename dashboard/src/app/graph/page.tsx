@@ -43,20 +43,16 @@ export default function GraphPage() {
   const setSelectedEntity = useStore((s) => s.setSelectedEntity);
 
   useEffect(() => {
-    Promise.all([
-      fetch("/api/analytics/relationships/centrality")
-        .then((r) => r.json())
-        .catch(() => []),
-      fetch("/api/analytics/flows/network")
-        .then((r) => r.json())
-        .catch(() => ({ nodes: [], edges: [] })),
-    ]).then(([centrality, network]) => {
+    fetch("/api/health/graph")
+      .then((r) => r.json())
+      .catch(() => ({ nodes: [], edges: [] }))
+    .then((network) => {
       const nodeMap = new Map<string, GraphNode>();
 
-      // Add centrality nodes
-      if (Array.isArray(centrality)) {
-        centrality.forEach((n: GraphNode) => {
-          nodeMap.set(n.id, { ...n, size: (n.centrality || 0.5) * 20 + 4 });
+      // Add graph nodes
+      if (Array.isArray(network.nodes)) {
+        network.nodes.forEach((n: GraphNode) => {
+          nodeMap.set(n.id, { ...n, size: Math.min((n.centrality || 1) * 3 + 4, 20) });
         });
       }
 

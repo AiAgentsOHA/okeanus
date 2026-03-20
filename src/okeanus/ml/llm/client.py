@@ -16,7 +16,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 # Retry / timeout constants for Anthropic API calls
-_API_TIMEOUT_SECONDS = 120
+_API_TIMEOUT_SECONDS = 1200
 _API_MAX_RETRIES = 3
 _API_BACKOFF_BASE = 2  # exponential backoff: 2s, 4s, 8s
 

@@ -170,7 +170,7 @@ export default function GlobePage() {
 
   useEffect(() => {
     const fetches = [
-      fetch("/api/analytics/entities/density")
+      fetch("/api/health/entities?limit=2000")
         .then((r) => r.json())
         .then((d) => { if (Array.isArray(d)) setEntities(d); })
         .catch(() => {}),
