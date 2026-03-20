@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useStore } from "@/lib/store";
 import { entityColor, entityColorHex, severityBg, cn } from "@/lib/utils";
 import {
@@ -177,12 +177,12 @@ export default function GlobePage() {
           <h3 className="text-lg font-semibold mb-2">
             {(selectedEntity.name as string) || "Unknown"}
           </h3>
-          {selectedEntity.description && (
+          {!!selectedEntity.description && (
             <p className="text-sm text-text-secondary mb-4 leading-relaxed">
               {selectedEntity.description as string}
             </p>
           )}
-          {selectedEntity.latitude && (
+          {!!selectedEntity.latitude && (
             <div className="flex items-center gap-1.5 text-xs text-text-muted mb-4">
               <MapPin size={12} />
               <span className="font-mono">
@@ -259,8 +259,8 @@ function MapView({
   onEntityClick,
   ready,
 }: {
-  viewState: Record<string, number>;
-  onViewStateChange: (vs: Record<string, number>) => void;
+  viewState: { longitude: number; latitude: number; zoom: number; pitch: number; bearing: number };
+  onViewStateChange: (vs: { longitude: number; latitude: number; zoom: number; pitch: number; bearing: number }) => void;
   entities: Entity[];
   hotspots: unknown[];
   density: unknown[];
@@ -353,5 +353,4 @@ function MapView({
   );
 }
 
-import { useRef } from "react";
 import type maplibregl from "maplibre-gl";

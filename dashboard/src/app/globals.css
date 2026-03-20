@@ -35,20 +35,44 @@ body {
   height: 100%;
 }
 
-/* Scrollbar */
+/* ===== Subtle Grid Background Pattern ===== */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(59, 130, 246, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(59, 130, 246, 0.03) 1px, transparent 1px);
+  background-size: 40px 40px;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* ===== Premium Scrollbar ===== */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
 ::-webkit-scrollbar-track {
   background: var(--bg-deep);
-}
-::-webkit-scrollbar-thumb {
-  background: var(--bg-hover);
   border-radius: 3px;
 }
+::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, var(--bg-hover), rgba(59, 130, 246, 0.3));
+  border-radius: 3px;
+  transition: background 0.2s;
+}
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--text-muted);
+  background: linear-gradient(180deg, var(--text-muted), rgba(6, 182, 212, 0.5));
+}
+::-webkit-scrollbar-corner {
+  background: var(--bg-deep);
+}
+
+/* Firefox scrollbar */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--bg-hover) var(--bg-deep);
 }
 
 /* MapLibre overrides */
@@ -57,7 +81,7 @@ body {
   display: none !important;
 }
 
-/* Pulse animation for critical alerts */
+/* ===== Pulse animation for critical alerts ===== */
 .pulse-critical {
   animation: pulseCritical 2s ease-in-out infinite;
 }
@@ -71,14 +95,215 @@ body {
   }
 }
 
-/* Glass morphism */
+/* ===== Glass morphism (enhanced) ===== */
 .glass {
-  background: rgba(17, 24, 39, 0.8);
-  backdrop-filter: blur(12px);
+  background: rgba(17, 24, 39, 0.75);
+  backdrop-filter: blur(16px) saturate(1.4);
+  -webkit-backdrop-filter: blur(16px) saturate(1.4);
   border: 1px solid rgba(255, 255, 255, 0.06);
+  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.3);
+}
+
+.glass-strong {
+  background: rgba(17, 24, 39, 0.88);
+  backdrop-filter: blur(24px) saturate(1.6);
+  -webkit-backdrop-filter: blur(24px) saturate(1.6);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
 /* Data font */
 .font-data {
   font-family: "JetBrains Mono", monospace;
+}
+
+/* ===== Card Glow Effect on Hover ===== */
+.card-glow {
+  position: relative;
+  transition: all 0.3s ease;
+}
+.card-glow:hover {
+  box-shadow:
+    0 0 20px rgba(6, 182, 212, 0.1),
+    0 0 40px rgba(59, 130, 246, 0.05);
+  border-color: rgba(6, 182, 212, 0.2);
+}
+
+/* ===== Animated Gradient Border for Active Panels ===== */
+.gradient-border-active {
+  position: relative;
+  border: none;
+}
+.gradient-border-active::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(
+    135deg,
+    rgba(6, 182, 212, 0.4),
+    rgba(59, 130, 246, 0.4),
+    rgba(139, 92, 246, 0.4),
+    rgba(6, 182, 212, 0.4)
+  );
+  background-size: 300% 300%;
+  animation: gradientBorderRotate 4s ease infinite;
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}
+@keyframes gradientBorderRotate {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+/* ===== Shimmer Loading Effect ===== */
+.shimmer {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.02) 25%,
+    rgba(255, 255, 255, 0.06) 50%,
+    rgba(255, 255, 255, 0.02) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.8s ease-in-out infinite;
+}
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* ===== Animated Counter (counting up) ===== */
+.stat-counter {
+  display: inline-block;
+  transition: all 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* ===== Live Pulse Dot ===== */
+.live-dot {
+  position: relative;
+}
+.live-dot::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  background: var(--accent-emerald);
+  opacity: 0;
+  animation: livePulse 2s ease-out infinite;
+}
+@keyframes livePulse {
+  0% { transform: scale(1); opacity: 0.5; }
+  100% { transform: scale(2.5); opacity: 0; }
+}
+
+/* ===== Sidebar Active Indicator Glow ===== */
+.nav-active-glow {
+  position: relative;
+  overflow: visible;
+}
+.nav-active-glow::before {
+  content: "";
+  position: absolute;
+  left: -4px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 24px;
+  border-radius: 0 3px 3px 0;
+  background: linear-gradient(180deg, var(--accent-cyan), var(--accent-blue));
+  box-shadow: 0 0 12px rgba(6, 182, 212, 0.5);
+}
+
+/* ===== Notification Badge ===== */
+.notification-badge {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  min-width: 16px;
+  height: 16px;
+  border-radius: 8px;
+  background: var(--accent-red);
+  color: white;
+  font-size: 9px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 4px;
+  box-shadow: 0 0 8px rgba(239, 68, 68, 0.5);
+  animation: badgePulse 2s ease-in-out infinite;
+  z-index: 10;
+}
+@keyframes badgePulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.1); }
+}
+
+/* ===== Tooltip ===== */
+.tooltip-wrapper {
+  position: relative;
+}
+.tooltip-wrapper .tooltip-text {
+  visibility: hidden;
+  opacity: 0;
+  position: absolute;
+  left: calc(100% + 12px);
+  top: 50%;
+  transform: translateY(-50%);
+  background: rgba(17, 24, 39, 0.95);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--text-secondary);
+  font-size: 11px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  white-space: nowrap;
+  pointer-events: none;
+  transition: opacity 0.2s, visibility 0.2s;
+  z-index: 50;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+.tooltip-wrapper:hover .tooltip-text {
+  visibility: visible;
+  opacity: 1;
+}
+
+/* ===== Critical Alert Flash ===== */
+@keyframes criticalFlash {
+  0%, 100% { background-color: transparent; }
+  50% { background-color: rgba(239, 68, 68, 0.08); }
+}
+.critical-flash {
+  animation: criticalFlash 1s ease-in-out 3;
+}
+
+/* ===== Severity Sparkline ===== */
+.sparkline-bar {
+  display: inline-block;
+  width: 3px;
+  border-radius: 1.5px;
+  transition: height 0.3s ease;
+}
+
+/* ===== Compass Rose ===== */
+.compass-rose {
+  transition: transform 0.3s ease;
+}
+
+/* ===== Coordinate Display ===== */
+.coord-display {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ===== Scale Bar ===== */
+.scale-bar {
+  border-bottom: 2px solid rgba(148, 163, 184, 0.4);
+  border-left: 2px solid rgba(148, 163, 184, 0.4);
+  border-right: 2px solid rgba(148, 163, 184, 0.4);
 }

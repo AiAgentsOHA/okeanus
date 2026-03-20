@@ -29,6 +29,10 @@ const config: Config = {
         "slide-in-left": "slideInLeft 0.3s ease-out",
         "fade-in": "fadeIn 0.2s ease-out",
         ticker: "ticker 30s linear infinite",
+        "glow-pulse": "glowPulse 3s ease-in-out infinite",
+        "count-up": "countUp 0.6s cubic-bezier(0.22, 1, 0.36, 1)",
+        "shimmer": "shimmer 1.8s ease-in-out infinite",
+        "border-glow": "gradientBorderRotate 4s ease infinite",
       },
       keyframes: {
         slideInRight: {
@@ -46,6 +50,19 @@ const config: Config = {
         ticker: {
           "0%": { transform: "translateX(100%)" },
           "100%": { transform: "translateX(-100%)" },
+        },
+        glowPulse: {
+          "0%, 100%": { boxShadow: "0 0 8px rgba(6, 182, 212, 0.2)" },
+          "50%": { boxShadow: "0 0 20px rgba(6, 182, 212, 0.4)" },
+        },
+        countUp: {
+          "0%": { transform: "translateY(8px)", opacity: "0" },
+          "100%": { transform: "translateY(0)", opacity: "1" },
+        },
+        gradientBorderRotate: {
+          "0%": { backgroundPosition: "0% 50%" },
+          "50%": { backgroundPosition: "100% 50%" },
+          "100%": { backgroundPosition: "0% 50%" },
         },
       },
     },

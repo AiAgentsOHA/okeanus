@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useRef, useCallback } from "react";
-import { Search, Filter, X, ZoomIn, ZoomOut, Maximize2 } from "lucide-react";
+import { Search, Filter, X, ZoomIn, ZoomOut, Maximize2, ChevronRight } from "lucide-react";
 import { entityColorHex, cn } from "@/lib/utils";
 import { useStore } from "@/lib/store";
 
