@@ -62,28 +62,16 @@ export function Topbar() {
   const [stats, setStats] = useState({ entities: 0, alerts: 0, sources: 0 });
 
   useEffect(() => {
-    Promise.all([
-      fetch("/api/analytics/entities/distribution")
-        .then((r) => r.json())
-        .then((d: { count?: number }[]) =>
-          d.reduce(
-            (sum: number, x: { count?: number }) =>
-              sum + (x.count || 0),
-            0
-          )
-        )
-        .catch(() => 0),
-      fetch("/api/alerts?limit=1000")
-        .then((r) => r.json())
-        .then((d: unknown[]) => d.length)
-        .catch(() => 0),
-      fetch("/api/lineage/sources")
-        .then((r) => r.json())
-        .then((d: unknown[]) => d.length)
-        .catch(() => 0),
-    ]).then(([entities, alerts, sources]) =>
-      setStats({ entities, alerts, sources })
-    );
+    fetch("/api/health/stats")
+      .then((r) => r.json())
+      .then((d) => {
+        setStats({
+          entities: d.entities || 0,
+          alerts: d.alerts || 0,
+          sources: d.sources || 0,
+        });
+      })
+      .catch(() => {});
   }, []);
 
   useEffect(() => {

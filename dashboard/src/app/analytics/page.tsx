@@ -18,23 +18,20 @@ export default function AnalyticsPage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    Promise.all([
-      fetch("/api/analytics/entities/distribution").then((r) => r.json()).catch(() => []),
-      fetch("/api/analytics/observations/temporal").then((r) => r.json()).catch(() => []),
-      fetch("/api/analytics/observations/sources").then((r) => r.json()).catch(() => []),
-      fetch("/api/analytics/events/severity-trend").then((r) => r.json()).catch(() => []),
-      fetch("/api/analytics/events/frequency").then((r) => r.json()).catch(() => []),
-    ]).then(([entityDist, temporal, sources, severity, eventFreq]) => {
-      setData({
-        entityDist: Array.isArray(entityDist) ? entityDist : [],
-        temporal: Array.isArray(temporal) ? temporal : [],
-        sources: Array.isArray(sources) ? sources : [],
-        severity: Array.isArray(severity) ? severity : [],
-        eventFreq: Array.isArray(eventFreq) ? eventFreq : [],
-        rankings: [],
-      });
-      setLoading(false);
-    });
+    fetch("/api/health/stats")
+      .then((r) => r.json())
+      .then((d) => {
+        setData({
+          entityDist: Array.isArray(d.entity_distribution) ? d.entity_distribution : [],
+          temporal: [],
+          sources: Array.isArray(d.source_breakdown) ? d.source_breakdown : [],
+          severity: Array.isArray(d.severity_distribution) ? d.severity_distribution : [],
+          eventFreq: [],
+          rankings: [],
+        });
+        setLoading(false);
+      })
+      .catch(() => setLoading(false));
   }, []);
 
   if (loading) {
