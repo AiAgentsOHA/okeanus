@@ -998,22 +998,34 @@ class UniverseOfThoughts:
             total_pruned = 0
             step_counts: dict[str, int] = {}
 
+            # Helper: run a strategy step with error isolation
+            async def _run_step(
+                name: str,
+                coro,
+            ) -> list[Thought]:
+                try:
+                    thoughts = await coro
+                    scored = await self._score_thoughts(thoughts)
+                    return scored
+                except Exception as exc:
+                    logger.warning("Strategy %s failed at depth %d: %s", name, depth, exc)
+                    return []
+
             # -- Step 1: C-UoT — Cross-domain analogies --
-            c_thoughts = await self.c_uot_analogies(
+            c_thoughts = await _run_step("C", self.c_uot_analogies(
                 topic,
                 domains[0] if domains else "general",
                 domains[1:] or ["economics", "ecology"],
                 graph,
                 session=session,
                 context=evidence[:500] if depth == 0 else "",
-            )
-            c_thoughts = await self._score_thoughts(c_thoughts)
+            ))
             total_pruned += graph.prune()
             step_counts["C"] = len(c_thoughts)
 
             # -- Step 2: E-UoT — Expand exploration --
             surviving_ids = [t.id for t in graph.by_type("C")]
-            e_thoughts = await self.e_uot_expand(
+            e_thoughts = await _run_step("E", self.e_uot_expand(
                 [{"finding": topic, "evidence": evidence[:500]}]
                 if depth == 0
                 else [t.to_dict() for t in graph.top_k(5)],
@@ -1021,79 +1033,72 @@ class UniverseOfThoughts:
                 graph=graph,
                 parent_ids=surviving_ids or None,
                 session=session,
-            )
-            e_thoughts = await self._score_thoughts(e_thoughts)
+            ))
             total_pruned += graph.prune()
             step_counts["E"] = len(e_thoughts)
 
             # -- Step 3: T-UoT — Transform assumptions --
             surviving_ids = [t.id for t in graph.top_k(5)]
-            t_thoughts = await self.t_uot_transform(
+            t_thoughts = await _run_step("T", self.t_uot_transform(
                 topic,
                 graph,
                 parent_ids=surviving_ids or None,
                 session=session,
                 context=evidence[:500] if depth == 0 else "",
-            )
-            t_thoughts = await self._score_thoughts(t_thoughts)
+            ))
             total_pruned += graph.prune()
             step_counts["T"] = len(t_thoughts)
 
             # -- Step 4: D-UoT — Dialectical reasoning --
             surviving_ids = [t.id for t in graph.top_k(5)]
-            d_thoughts = await self.d_uot_dialectic(
+            d_thoughts = await _run_step("D", self.d_uot_dialectic(
                 graph,
                 parent_ids=surviving_ids or None,
                 context=evidence[:500] if depth == 0 else "",
-            )
-            d_thoughts = await self._score_thoughts(d_thoughts)
+            ))
             total_pruned += graph.prune()
             step_counts["D"] = len(d_thoughts)
 
             # -- Step 5: CF-UoT — Counterfactual reasoning --
             surviving_ids = [t.id for t in graph.top_k(5)]
-            cf_thoughts = await self.cf_uot_counterfactual(
+            cf_thoughts = await _run_step("CF", self.cf_uot_counterfactual(
                 topic,
                 graph,
                 parent_ids=surviving_ids or None,
                 context=evidence[:500] if depth == 0 else "",
-            )
-            cf_thoughts = await self._score_thoughts(cf_thoughts)
+            ))
             total_pruned += graph.prune()
             step_counts["CF"] = len(cf_thoughts)
 
             # -- Step 6: AB-UoT — Abductive reasoning --
             surviving_ids = [t.id for t in graph.top_k(5)]
-            ab_thoughts = await self.ab_uot_abductive(
+            ab_thoughts = await _run_step("AB", self.ab_uot_abductive(
                 anomalies or [],
                 graph,
                 parent_ids=surviving_ids or None,
                 context=evidence[:500] if depth == 0 else "",
-            )
-            ab_thoughts = await self._score_thoughts(ab_thoughts)
+            ))
             total_pruned += graph.prune()
             step_counts["AB"] = len(ab_thoughts)
 
             # -- Step 7: RT-UoT — Red team / adversarial --
             surviving_ids = [t.id for t in graph.top_k(5)]
-            rt_thoughts = await self.rt_uot_red_team(
+            rt_thoughts = await _run_step("RT", self.rt_uot_red_team(
                 graph,
                 parent_ids=surviving_ids or None,
-            )
-            rt_thoughts = await self._score_thoughts(rt_thoughts)
+            ))
             total_pruned += graph.prune()
             step_counts["RT"] = len(rt_thoughts)
 
             # -- Step 8: CR-UoT — Constraint relaxation --
             surviving_ids = [t.id for t in graph.top_k(5)]
-            cr_thoughts = await self.cr_uot_constraint_relax(
+            cr_thoughts = await _run_step("CR", self.cr_uot_constraint_relax(
                 topic,
                 constraints or [],
                 graph,
                 parent_ids=surviving_ids or None,
                 context=evidence[:500] if depth == 0 else "",
-            )
-            cr_thoughts = await self._score_thoughts(cr_thoughts)
+            ))
             total_pruned += graph.prune()
             step_counts["CR"] = len(cr_thoughts)
 

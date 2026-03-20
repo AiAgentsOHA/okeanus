@@ -285,17 +285,17 @@ export default function GlobePage() {
             </button>
           </div>
           <h3 className="text-lg font-semibold mb-2">{(selectedEntity.name as string) || "Unknown"}</h3>
-          {selectedEntity.description && (
-            <p className="text-sm text-text-secondary mb-4 leading-relaxed">{selectedEntity.description as string}</p>
-          )}
-          {selectedEntity.latitude && (
+          {selectedEntity.description ? (
+            <p className="text-sm text-text-secondary mb-4 leading-relaxed">{String(selectedEntity.description)}</p>
+          ) : null}
+          {selectedEntity.latitude ? (
             <div className="flex items-center gap-1.5 text-xs text-text-muted mb-4">
               <MapPin size={12} />
               <span className="font-mono">
                 {Number(selectedEntity.latitude).toFixed(4)}, {Number(selectedEntity.longitude).toFixed(4)}
               </span>
             </div>
-          )}
+          ) : null}
           <div className="space-y-1.5">
             <div className="text-[10px] uppercase tracking-wider text-text-muted font-semibold mb-1">Properties</div>
             {Object.entries(selectedEntity)
