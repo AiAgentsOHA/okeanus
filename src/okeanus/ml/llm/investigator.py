@@ -206,10 +206,56 @@ You have access to 95+ ocean data sources through your tools, covering physical 
 class InvestigationEngine:
     """Runs a recursive investigation with Claude tool-use."""
 
+    # Max chars per tool result (~12K tokens).  Keeps total context well
+    # within 1M even at 15 iterations with multiple tool calls each.
+    TOOL_RESULT_MAX_CHARS = 50_000
+
     def __init__(self, investigation: Investigation):
         self.investigation = investigation
         self._client = None
         self._total_tool_calls = 0
+
+    @staticmethod
+    def _truncate_tool_result(result: Any, max_chars: int) -> str:
+        """Truncate a tool result string to *max_chars*.
+
+        When the result is a dict containing an ``items`` or ``features``
+        list (the common pattern from data-query tools), keep only the
+        first entries that fit and append a short summary so the LLM
+        knows data was trimmed.
+        """
+        import json
+
+        text = str(result)
+        if len(text) <= max_chars:
+            return text
+
+        # Try to truncate at the data level for cleaner output
+        if isinstance(result, dict):
+            for key in ("items", "features", "nodes", "regions", "sources"):
+                if key in result and isinstance(result[key], list):
+                    total = len(result[key])
+                    # Binary-search for how many items fit
+                    lo, hi = 0, total
+                    while lo < hi:
+                        mid = (lo + hi + 1) // 2
+                        candidate = {**result, key: result[key][:mid]}
+                        candidate["_truncated"] = f"Showing {mid}/{total} {key}"
+                        if "count" in candidate:
+                            candidate["count"] = f"{mid}/{total}"
+                        if len(json.dumps(candidate, default=str)) <= max_chars:
+                            lo = mid
+                        else:
+                            hi = mid - 1
+                    if lo > 0:
+                        truncated = {**result, key: result[key][:lo]}
+                        truncated["_truncated"] = f"Showing {lo}/{total} {key}. Ask for more specific filters to narrow results."
+                        if "count" in truncated:
+                            truncated["count"] = f"{lo}/{total}"
+                        return json.dumps(truncated, default=str)
+
+        # Fallback: hard character truncation
+        return text[:max_chars] + f"\n... [TRUNCATED — {len(text):,} chars total, showing first {max_chars:,}]"
 
     @property
     def client(self):
@@ -347,7 +393,9 @@ class InvestigationEngine:
                         tool_results.append({
                             "type": "tool_result",
                             "tool_use_id": block.id,
-                            "content": str(result),
+                            "content": self._truncate_tool_result(
+                                result, self.TOOL_RESULT_MAX_CHARS
+                            ),
                         })
                     except Exception as exc:
                         tool_results.append({

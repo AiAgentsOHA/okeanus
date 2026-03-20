@@ -216,7 +216,13 @@ class KnowledgeGraphBuilder:
             )
 
         if edges:
-            await session.execute(insert(KnowledgeEdge).values(edges))
+            # Batch inserts to stay under asyncpg's 32767 parameter limit
+            # Each edge has 13 columns, so max ~2500 per batch
+            batch_size = 2000
+            for i in range(0, len(edges), batch_size):
+                await session.execute(
+                    insert(KnowledgeEdge).values(edges[i : i + batch_size])
+                )
         return len(edges)
 
     # ------------------------------------------------------------------
@@ -226,40 +232,93 @@ class KnowledgeGraphBuilder:
     async def build_semantic_edges(
         self,
         session: AsyncSession,
-        min_similarity: float = 0.8,
+        min_similarity: float = 0.5,
         max_edges: int = 5000,
+        neighbors_per_row: int = 10,
     ) -> int:
         """Create edges between entities with similar embeddings.
 
-        Queries pgvector for cross-source-type embedding pairs above threshold.
-        Creates RELATES_TO edges with strength = cosine similarity.
+        Uses pgvector IVFFlat index via LATERAL nearest-neighbor lookup
+        instead of a brute-force cross-join.  For each distinct pair of
+        source_types, the *smaller* side drives a lateral scan into the
+        larger side.  Deduplication is done in Python to keep the SQL
+        simple and fast.
         """
-        sql = text("""
-            SELECT
-                e1.source_id AS a_id,
-                e1.source_type AS a_type,
-                e1.text_content AS a_text,
-                e2.source_id AS b_id,
-                e2.source_type AS b_type,
-                e2.text_content AS b_text,
-                1 - (e1.embedding <=> e2.embedding) AS similarity
-            FROM embeddings e1
-            JOIN embeddings e2 ON e1.id < e2.id
-                AND e1.source_type != e2.source_type
-            WHERE 1 - (e1.embedding <=> e2.embedding) >= :min_sim
-            ORDER BY e1.embedding <=> e2.embedding
-            LIMIT :lim
-        """)
-        rows = (await session.execute(sql, {
-            "min_sim": min_similarity,
-            "lim": max_edges,
-        })).fetchall()
+        # 1. Discover source_types with counts (drive from smaller side)
+        type_rows = (await session.execute(
+            text("""SELECT source_type, count(*) AS cnt
+                    FROM embeddings GROUP BY source_type ORDER BY cnt""")
+        )).fetchall()
+        type_counts = [(r[0], r[1]) for r in type_rows]
 
-        if not rows:
+        if len(type_counts) < 2:
+            logger.info("Fewer than 2 source_types — no cross-type edges possible")
             return 0
 
+        # 2. For every source_type pair, lateral NN from smaller into larger
+        all_rows: list[Any] = []
+        seen_pairs: set[tuple[str, str]] = set()
+
+        for i, (st_a, cnt_a) in enumerate(type_counts):
+            for st_b, cnt_b in type_counts[i + 1:]:
+                if len(all_rows) >= max_edges:
+                    break
+
+                # Always scan from the smaller side
+                if cnt_a <= cnt_b:
+                    probe_type, target_type = st_a, st_b
+                else:
+                    probe_type, target_type = st_b, st_a
+
+                remaining = max_edges - len(all_rows)
+                sql = text("""
+                    SELECT
+                        a.source_id    AS a_id,
+                        a.source_type  AS a_type,
+                        a.text_content AS a_text,
+                        nb.source_id   AS b_id,
+                        nb.source_type AS b_type,
+                        nb.text_content AS b_text,
+                        1 - (a.embedding <=> nb.embedding) AS similarity
+                    FROM embeddings a
+                    CROSS JOIN LATERAL (
+                        SELECT b.source_id, b.source_type, b.text_content, b.embedding
+                        FROM embeddings b
+                        WHERE b.source_type = :target_type
+                        ORDER BY b.embedding <=> a.embedding
+                        LIMIT :k
+                    ) nb
+                    WHERE a.source_type = :probe_type
+                      AND 1 - (a.embedding <=> nb.embedding) >= :min_sim
+                    LIMIT :lim
+                """)
+                rows = (await session.execute(sql, {
+                    "probe_type": probe_type,
+                    "target_type": target_type,
+                    "k": neighbors_per_row,
+                    "min_sim": min_similarity,
+                    "lim": remaining,
+                })).fetchall()
+
+                for row in rows:
+                    pair_key = (str(min(row.a_id, row.b_id)),
+                                str(max(row.a_id, row.b_id)))
+                    if pair_key not in seen_pairs:
+                        seen_pairs.add(pair_key)
+                        all_rows.append(row)
+
+                logger.info(
+                    "Semantic edges %s<->%s: %d candidates (probe=%s, %d rows)",
+                    st_a, st_b, len(rows), probe_type,
+                    cnt_a if probe_type == st_a else cnt_b,
+                )
+
+        if not all_rows:
+            return 0
+
+        # 3. Build edge dicts
         edges: list[dict[str, Any]] = []
-        for row in rows:
+        for row in all_rows:
             similarity = float(row.similarity)
             edges.append({
                 "id": uuid.uuid4(),
@@ -278,7 +337,11 @@ class KnowledgeGraphBuilder:
             })
 
         if edges:
-            await session.execute(insert(KnowledgeEdge).values(edges))
+            batch_size = 2000
+            for i in range(0, len(edges), batch_size):
+                await session.execute(
+                    insert(KnowledgeEdge).values(edges[i : i + batch_size])
+                )
         logger.info("Created %d semantic similarity edges", len(edges))
         return len(edges)
 
@@ -310,40 +373,41 @@ class KnowledgeGraphBuilder:
         if not codes:
             return 0
 
-        # Map time series codes -> entity IDs via the time_series table
+        # Map time series codes -> time_series UUID primary keys
         placeholders = ", ".join(f":c{i}" for i in range(len(codes)))
         code_list = list(codes)
         params = {f"c{i}": code for i, code in enumerate(code_list)}
         sql = text(f"""
-            SELECT DISTINCT code, entity_id
+            SELECT DISTINCT ON (code) code, id AS ts_id, name AS ts_name
             FROM time_series
             WHERE code IN ({placeholders})
-              AND entity_id IS NOT NULL
+            ORDER BY code, timestamp DESC
         """)
         rows = (await session.execute(sql, params)).fetchall()
-        code_to_entity: dict[str, uuid.UUID] = {
-            row.code: row.entity_id for row in rows
-        }
+
+        code_to_node: dict[str, tuple[uuid.UUID, str]] = {}
+        for row in rows:
+            code_to_node[row.code] = (row.ts_id, NodeType.TIMESERIES.value)
 
         edges: list[dict[str, Any]] = []
         for c in correlations:
             ev = c.get("evidence", c)
             code_a = ev.get("code_a", "")
             code_b = ev.get("code_b", "")
-            entity_a = code_to_entity.get(code_a)
-            entity_b = code_to_entity.get(code_b)
+            node_a = code_to_node.get(code_a)
+            node_b = code_to_node.get(code_b)
 
-            if not entity_a or not entity_b or entity_a == entity_b:
+            if not node_a or not node_b or node_a[0] == node_b[0]:
                 continue
 
             corr_val = ev.get("correlation", 0)
             edges.append({
                 "id": uuid.uuid4(),
-                "source_id": entity_a,
-                "source_type": NodeType.ENTITY.value,
+                "source_id": node_a[0],
+                "source_type": node_a[1],
                 "source_label": code_a,
-                "target_id": entity_b,
-                "target_type": NodeType.ENTITY.value,
+                "target_id": node_b[0],
+                "target_type": node_b[1],
                 "target_label": code_b,
                 "edge_type": EdgeType.CORRELATES_WITH.value,
                 "strength": round(abs(corr_val), 4),

@@ -508,6 +508,57 @@ class ClaimRead(BaseModel):
         return _wkb_to_geojson(v)
 
 
+class Alert(Base):
+    """System-generated alert from anomaly detection, change-point, or pattern match."""
+
+    __tablename__ = "alerts"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    alert_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    severity: Mapped[str] = mapped_column(String(20), nullable=False)
+    source_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    source_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    title: Mapped[str] = mapped_column(String(500), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="NEW")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    resolved_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+    __table_args__ = (
+        Index("ix_alerts_status", "status"),
+        Index("ix_alerts_severity", "severity"),
+        Index("ix_alerts_type", "alert_type"),
+        Index("ix_alerts_created", "created_at"),
+    )
+
+
+class AlertRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    alert_type: str
+    severity: str
+    source_type: str
+    source_id: uuid.UUID | None = None
+    title: str
+    description: str | None = None
+    payload: dict[str, Any] | None = None
+    status: str
+    created_at: datetime
+    resolved_at: datetime | None = None
+    resolved_by: str | None = None
+
+
 class RelationshipRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

@@ -56,10 +56,13 @@ class Settings(BaseSettings):
 
     # -- ML / LLM --
     anthropic_api_key: str = ""
-    llm_model: str = "claude-sonnet-4-20250514"
+    gemini_api_key: str = ""
+    llm_provider: str = "anthropic"  # "anthropic" or "claude_cli"
+    llm_model: str = "claude-sonnet-4-6"
     llm_max_tokens: int = 4096
-    embedding_model: str = "BAAI/bge-small-en-v1.5"
-    embedding_dim: int = 384
+    gemini_chat_model: str = "gemini-2.5-flash"
+    embedding_model: str = "nomic-ai/nomic-embed-text-v2-moe"
+    embedding_dim: int = 768
     graph_auto_build: bool = True
 
     # -- Investigation --

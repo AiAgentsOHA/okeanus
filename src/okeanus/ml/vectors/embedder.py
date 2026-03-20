@@ -1,4 +1,4 @@
-"""BGE-small-en-v1.5 embedding generator with lazy model loading."""
+"""Nomic Embed Text v2 MoE embedding generator with lazy model loading."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ def _get_model():
         from sentence_transformers import SentenceTransformer
         from okeanus.config import settings
         logger.info("Loading embedding model: %s", settings.embedding_model)
-        _model = SentenceTransformer(settings.embedding_model)
+        _model = SentenceTransformer(settings.embedding_model, trust_remote_code=True)
     return _model
 
 
@@ -27,7 +27,7 @@ class OceanEmbedder:
     """Generate embeddings for ocean data text using BGE-small."""
 
     def embed_texts(self, texts: list[str], batch_size: int = 64) -> np.ndarray:
-        """Embed a list of texts, returns (N, 384) float32 array."""
+        """Embed a list of texts, returns (N, dim) float32 array."""
         model = _get_model()
         return model.encode(
             texts,
@@ -37,7 +37,7 @@ class OceanEmbedder:
         )
 
     def embed_single(self, text: str) -> np.ndarray:
-        """Embed a single text, returns (384,) float32 array."""
+        """Embed a single text, returns (dim,) float32 array."""
         return self.embed_texts([text])[0]
 
     def text_for_entity(self, entity: dict[str, Any]) -> str:

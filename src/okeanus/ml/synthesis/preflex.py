@@ -148,18 +148,10 @@ class PRefLexOR:
         self._convergence_threshold = convergence_threshold
 
     async def _call_llm(self, system: str, user_message: str) -> str:
-        """Call Claude with a specific system prompt."""
-        from anthropic import AsyncAnthropic
-        from okeanus.config import settings
+        """Call LLM with a specific system prompt."""
+        from okeanus.ml.llm.client import call_llm
 
-        client = AsyncAnthropic(api_key=settings.anthropic_api_key)
-        response = await client.messages.create(
-            model=settings.llm_model,
-            max_tokens=settings.llm_max_tokens,
-            system=system,
-            messages=[{"role": "user", "content": user_message}],
-        )
-        return response.content[0].text
+        return await call_llm(system, user_message)
 
     async def think(self, evidence: str) -> str:
         """Generator phase — produce initial findings from evidence."""

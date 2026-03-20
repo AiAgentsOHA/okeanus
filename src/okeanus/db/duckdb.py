@@ -1117,3 +1117,70 @@ def observation_source_coverage() -> list[dict[str, Any]]:
         ORDER BY record_count DESC
     """
     return _rows_to_dicts(get_connection(), sql)
+
+
+# ===================================================================
+# Spatial analytics (2)
+# ===================================================================
+
+
+def spatial_cluster_summary(
+    resolution: float = 1.0,
+) -> list[dict[str, Any]]:
+    """Quick cluster summary using DuckDB spatial extension.
+
+    Groups observations into geographic bins and returns bins
+    with multiple sources as potential cluster candidates.
+    """
+    res = float(resolution)
+    sql = f"""
+        SELECT
+            floor(ST_Y(geometry) / {res}) * {res} AS lat_bin,
+            floor(ST_X(geometry) / {res}) * {res} AS lon_bin,
+            count(*)                               AS count,
+            count(DISTINCT source_name)            AS source_count,
+            count(DISTINCT obs_type)               AS type_count,
+            min(timestamp)                         AS earliest,
+            max(timestamp)                         AS latest
+        FROM observations
+        WHERE geometry IS NOT NULL
+        GROUP BY lat_bin, lon_bin
+        HAVING count(*) >= 5
+        ORDER BY count DESC
+    """
+    return _rows_to_dicts(get_connection(), sql)
+
+
+def observation_density_grid(
+    resolution: float = 1.0,
+    obs_type: str | None = None,
+) -> list[dict[str, Any]]:
+    """Grid-based density using DuckDB floor/group with normalized density."""
+    res = float(resolution)
+    conditions: list[str] = ["geometry IS NOT NULL"]
+    params: list[Any] = []
+    if obs_type:
+        conditions.append("obs_type = ?")
+        params.append(obs_type)
+
+    where = "WHERE " + " AND ".join(conditions)
+
+    sql = f"""
+        WITH grid AS (
+            SELECT
+                floor(ST_Y(geometry) / {res}) * {res} AS lat_bin,
+                floor(ST_X(geometry) / {res}) * {res} AS lon_bin,
+                count(*) AS count
+            FROM observations
+            {where}
+            GROUP BY lat_bin, lon_bin
+        )
+        SELECT
+            lat_bin,
+            lon_bin,
+            count,
+            count * 1.0 / max(count) OVER () AS density
+        FROM grid
+        ORDER BY count DESC
+    """
+    return _rows_to_dicts(get_connection(), sql, params or None)

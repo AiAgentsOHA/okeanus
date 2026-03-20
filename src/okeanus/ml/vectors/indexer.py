@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from okeanus.config import settings
 from okeanus.ml.vectors.embedder import OceanEmbedder
 
 logger = logging.getLogger(__name__)
@@ -24,7 +25,7 @@ class EmbeddingIndexer:
         session: AsyncSession,
         batch_size: int = 200,
     ) -> dict[str, int]:
-        """Build embeddings for all entities, events. Returns counts."""
+        """Build embeddings for all entities, events, and observations."""
         counts: dict[str, int] = {}
 
         # Entities
@@ -68,6 +69,60 @@ class EmbeddingIndexer:
             embeddings = self._embedder.embed_texts(texts, batch_size=batch_size)
             await self._upsert_embeddings(session, texts, embeddings, meta)
             counts["events"] = len(event_rows)
+
+        # Observations — paginated to handle 65K+ rows
+        from okeanus.schema.base import Observation
+        total_obs = (await session.execute(
+            select(func.count(Observation.id))
+        )).scalar() or 0
+
+        if total_obs > 0:
+            logger.info("Embedding %d observations in pages of 1000...", total_obs)
+            obs_embedded = 0
+            page_size = 1000
+            offset = 0
+
+            while offset < total_obs:
+                obs_rows = (await session.execute(
+                    select(
+                        Observation.id, Observation.obs_type,
+                        Observation.source_name, Observation.payload,
+                    )
+                    .order_by(Observation.id)
+                    .offset(offset)
+                    .limit(page_size)
+                )).fetchall()
+
+                if not obs_rows:
+                    break
+
+                texts = []
+                meta = []
+                for row in obs_rows:
+                    d = {
+                        "source_name": row.source_name,
+                        "parameter": row.obs_type,
+                        "payload": row.payload,
+                    }
+                    texts.append(self._embedder.text_for_observation(d))
+                    meta.append({
+                        "id": row.id,
+                        "source_type": "observation",
+                        "table": "observations",
+                    })
+
+                embeddings = self._embedder.embed_texts(texts, batch_size=batch_size)
+                await self._upsert_embeddings(session, texts, embeddings, meta)
+                await session.flush()
+
+                obs_embedded += len(obs_rows)
+                offset += page_size
+                logger.info(
+                    "Observations: %d / %d embedded (%.0f%%)",
+                    obs_embedded, total_obs, obs_embedded / total_obs * 100,
+                )
+
+            counts["observations"] = obs_embedded
 
         return counts
 
@@ -113,7 +168,7 @@ class EmbeddingIndexer:
                     INSERT INTO embeddings (id, source_id, source_type, source_table,
                                            text_content, embedding, model_name)
                     VALUES (:id, :source_id, :source_type, :source_table,
-                            :text_content, :embedding::vector, :model_name)
+                            :text_content, CAST(:embedding AS vector), :model_name)
                     ON CONFLICT ON CONSTRAINT uq_emb_source DO UPDATE
                     SET text_content = EXCLUDED.text_content,
                         embedding = EXCLUDED.embedding,
@@ -126,7 +181,7 @@ class EmbeddingIndexer:
                     "source_table": m["table"],
                     "text_content": txt[:2000],
                     "embedding": vec_str,
-                    "model_name": "BAAI/bge-small-en-v1.5",
+                    "model_name": settings.embedding_model,
                 },
             )
 

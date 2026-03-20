@@ -15,6 +15,8 @@ from okeanus import __version__
 
 from okeanus.api import analytics, dashboard, economy, health, ingest, observations, query, regions, vessels
 from okeanus.api.behavioral import router as behavioral_router
+from okeanus.api.geospatial import router as geospatial_router
+from okeanus.api.lineage import router as lineage_router
 from okeanus.api.reports import router as reports_router
 from okeanus.api.risk import router as risk_router
 from okeanus.ml.anomaly import router as anomaly_router
@@ -24,6 +26,7 @@ from okeanus.api.investigate import router as investigate_router
 from okeanus.auth.routes import router as auth_router
 from okeanus.geofence.routes import router as geofence_router
 from okeanus.ml.llm.chat import router as chat_router
+from okeanus.api.alerts import router as alerts_api_router
 from okeanus.config import settings
 from okeanus.streaming import alerts, vessels_ws
 from okeanus.streaming import status as streaming_status
@@ -74,6 +77,10 @@ async def lifespan(app: FastAPI):
 
     # Shutdown streaming
     if ais_task:
+        try:
+            await ingester.stop()  # type: ignore[union-attr]
+        except Exception:
+            pass
         ais_task.cancel()
         try:
             await ais_task
@@ -142,6 +149,9 @@ app.include_router(behavioral_router)
 app.include_router(geofence_router)
 app.include_router(risk_router)
 app.include_router(reports_router)
+app.include_router(geospatial_router)
+app.include_router(lineage_router)
+app.include_router(alerts_api_router)
 
 # Intelligence layer
 try:

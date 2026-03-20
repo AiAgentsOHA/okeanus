@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import logging
+import math
 from datetime import datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Query
 from geoalchemy2.shape import from_shape
-from shapely.geometry import shape
+from shapely.geometry import Point, shape
 
 from okeanus.adapters import ADAPTER_REGISTRY
 from okeanus.config import settings
@@ -20,11 +21,33 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/ingest", tags=["ingest"])
 
 
+def _sanitize_payload(obj: Any) -> Any:
+    """Replace NaN/Inf floats with None so the dict is valid JSON for Postgres."""
+    if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+        return None
+    if isinstance(obj, dict):
+        return {k: _sanitize_payload(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_payload(v) for v in obj]
+    return obj
+
+
 def _dict_to_observation(record: dict[str, Any]) -> Observation:
     """Convert an adapter output dict into an ORM Observation."""
-    geom = record.pop("geometry")
-    shapely_geom = shape(geom)
+    geom = record.pop("geometry", None)
+    if geom is None:
+        shapely_geom = Point(0, 0)
+    else:
+        shapely_geom = shape(geom)
     wkb_geom = from_shape(shapely_geom, srid=4326)
+
+    # Coerce mmsi to int if passed as string
+    mmsi = record.pop("mmsi", None)
+    if mmsi is not None:
+        try:
+            mmsi = int(mmsi)
+        except (ValueError, TypeError):
+            mmsi = None
 
     obs = Observation(
         obs_type=record.pop("obs_type", "physical"),
@@ -35,8 +58,8 @@ def _dict_to_observation(record: dict[str, Any]) -> Observation:
         quality_score=record.pop("quality_score", None),
         aphia_id=record.pop("aphia_id", None),
         mrgid=record.pop("mrgid", None),
-        mmsi=record.pop("mmsi", None),
-        payload=record if record else None,
+        mmsi=mmsi,
+        payload=_sanitize_payload(record) if record else None,
     )
     return obs
 
