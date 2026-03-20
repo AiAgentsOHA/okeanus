@@ -135,6 +135,162 @@ async def entities_list(limit: int = 500) -> list[dict]:
         return []
 
 
+@router.get("/graph/full")
+async def graph_full(
+    entity_type: str | None = None,
+    community_id: int | None = None,
+    limit: int = 3000,
+) -> dict:
+    """Full knowledge graph with NetworkX-computed analytics."""
+    try:
+        from okeanus.ml.graph.networkx_engine import get_engine
+        from sqlalchemy.ext.asyncio import AsyncSession
+        from sqlalchemy.orm import sessionmaker
+
+        nx_engine = get_engine()
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        async with async_session() as session:
+            await nx_engine.ensure_built(session)
+
+        return nx_engine.get_full_graph(
+            entity_type=entity_type,
+            community_id=community_id,
+            limit=limit,
+        )
+    except Exception as exc:
+        logger.warning("Full graph query failed: %s", exc)
+        return {"nodes": [], "edges": [], "communities": [], "summary": {}}
+
+
+@router.get("/graph/communities")
+async def graph_communities() -> dict:
+    """List all communities with summaries."""
+    try:
+        from okeanus.ml.graph.networkx_engine import get_engine
+        from sqlalchemy.ext.asyncio import AsyncSession
+        from sqlalchemy.orm import sessionmaker
+
+        nx_engine = get_engine()
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        async with async_session() as session:
+            await nx_engine.ensure_built(session)
+
+        sizes = nx_engine._metrics.get('community_sizes', {})
+        communities = []
+        for cid, size in sorted(sizes.items(), key=lambda x: -x[1])[:50]:
+            summary = nx_engine.get_community_summary(cid)
+            communities.append(summary)
+        return {"communities": communities}
+    except Exception as exc:
+        logger.warning("Communities query failed: %s", exc)
+        return {"communities": []}
+
+
+@router.get("/graph/bridges")
+async def graph_bridges(top_k: int = 50) -> dict:
+    """Top cross-domain bridge nodes."""
+    try:
+        from okeanus.ml.graph.networkx_engine import get_engine
+        from sqlalchemy.ext.asyncio import AsyncSession
+        from sqlalchemy.orm import sessionmaker
+
+        nx_engine = get_engine()
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        async with async_session() as session:
+            await nx_engine.ensure_built(session)
+
+        return {"bridges": nx_engine.get_bridges(top_k)}
+    except Exception as exc:
+        logger.warning("Bridges query failed: %s", exc)
+        return {"bridges": []}
+
+
+@router.post("/graph/rebuild")
+async def graph_rebuild() -> dict:
+    """Force rebuild the NetworkX graph cache."""
+    try:
+        from okeanus.ml.graph.networkx_engine import get_engine
+        from sqlalchemy.ext.asyncio import AsyncSession
+        from sqlalchemy.orm import sessionmaker
+
+        nx_engine = get_engine()
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        async with async_session() as session:
+            result = await nx_engine.rebuild(session)
+        return {"status": "rebuilt", **result}
+    except Exception as exc:
+        logger.warning("Graph rebuild failed: %s", exc)
+        return {"status": "error", "detail": str(exc)}
+
+
+@router.post("/insights/generate")
+async def generate_insights(
+    max_communities: int = 5,
+    max_bridges: int = 10,
+) -> dict:
+    """Run UoT-powered insight generation on the knowledge graph."""
+    try:
+        from okeanus.ml.graph.insight_generator import InsightGenerator
+        from okeanus.ml.graph.networkx_engine import get_engine
+        from sqlalchemy.ext.asyncio import AsyncSession
+        from sqlalchemy.orm import sessionmaker
+
+        nx_engine = get_engine()
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        async with async_session() as session:
+            await nx_engine.ensure_built(session)
+            gen = InsightGenerator(
+                max_communities=max_communities,
+                max_bridges=max_bridges,
+            )
+            result = await gen.generate_all(session, nx_engine)
+        return {"status": "ok", **result}
+    except Exception as exc:
+        logger.warning("Insight generation failed: %s", exc)
+        return {"status": "error", "detail": str(exc)}
+
+
+@router.get("/insights")
+async def list_insights(
+    status: str | None = None,
+    insight_type: str | None = None,
+    min_confidence: float = 0.0,
+    limit: int = 50,
+) -> list[dict]:
+    """List stored insights from UoT reasoning."""
+    try:
+        from okeanus.ml.synthesis.insights import InsightManager
+        from sqlalchemy.ext.asyncio import AsyncSession
+        from sqlalchemy.orm import sessionmaker
+
+        mgr = InsightManager()
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        async with async_session() as session:
+            insights = await mgr.get_insights(
+                session,
+                status=status,
+                insight_type=insight_type,
+                min_confidence=min_confidence,
+                limit=limit,
+            )
+            return [
+                {
+                    "id": str(i.id),
+                    "insight_type": i.insight_type,
+                    "title": i.title,
+                    "confidence": i.confidence,
+                    "involved_domains": i.involved_domains,
+                    "generator": i.generator,
+                    "status": i.status,
+                    "created_at": i.created_at.isoformat() if i.created_at else None,
+                }
+                for i in insights
+            ]
+    except Exception as exc:
+        logger.warning("Insights list failed: %s", exc)
+        return []
+
+
 @router.get("/sources")
 async def health_sources() -> dict:
     """Check connectivity to each configured data source."""

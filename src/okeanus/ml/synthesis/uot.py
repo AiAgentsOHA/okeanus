@@ -432,14 +432,21 @@ class UniverseOfThoughts:
         session,
         top_k: int = 10,
     ) -> list[dict[str, Any]]:
-        """Query knowledge graph for cross-domain bridge concepts."""
+        """Query NetworkX engine for cross-domain bridge concepts."""
         try:
-            from okeanus.ml.graph.algorithms import GraphAlgorithms
-            algos = GraphAlgorithms()
-            return await algos.cross_domain_bridges(session, top_k=top_k)
+            from okeanus.ml.graph.networkx_engine import get_engine
+            engine = get_engine()
+            await engine.ensure_built(session)
+            return engine.get_bridges(top_k)
         except Exception as exc:
             logger.debug("Could not fetch bridges: %s", exc)
-            return []
+            # Fallback to old method
+            try:
+                from okeanus.ml.graph.algorithms import GraphAlgorithms
+                algos = GraphAlgorithms()
+                return await algos.cross_domain_bridges(session, top_k=top_k)
+            except Exception:
+                return []
 
     async def _fetch_unexplored(
         self,

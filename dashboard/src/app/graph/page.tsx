@@ -11,7 +11,11 @@ interface GraphNode {
   name?: string;
   entity_type?: string;
   type?: string;
+  source_name?: string;
+  pagerank?: number;
   centrality?: number;
+  community_id?: number;
+  is_bridge?: boolean;
   size?: number;
   x?: number;
   y?: number;
@@ -25,7 +29,16 @@ interface GraphEdge {
   weight?: number;
 }
 
-const EDGE_TYPES = ["SPATIALLY_NEAR", "RELATES_TO", "CORRELATES_WITH", "CAUSES"];
+const EDGE_TYPES = ["SPATIALLY_NEAR", "RELATES_TO", "CORRELATES_WITH", "CAUSES", "IDENTITY", "OPERATES_IN", "REGULATED_BY", "SOURCED_FROM", "IS_A"];
+
+const COMMUNITY_COLORS = [
+  "#06B6D4", "#F59E0B", "#10B981", "#EF4444", "#8B5CF6",
+  "#3B82F6", "#EC4899", "#14B8A6", "#F97316", "#6366F1",
+  "#84CC16", "#F43F5E", "#22D3EE", "#A855F7", "#FB923C",
+];
+
+const communityColor = (communityId: number) =>
+  COMMUNITY_COLORS[communityId % COMMUNITY_COLORS.length];
 
 export default function GraphPage() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -40,55 +53,49 @@ export default function GraphPage() {
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [dragging, setDragging] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+  const [summary, setSummary] = useState<Record<string, unknown>>({});
   const setSelectedEntity = useStore((s) => s.setSelectedEntity);
 
   useEffect(() => {
-    fetch("/api/health/graph")
+    fetch("/api/health/graph/full?limit=3000")
       .then((r) => r.json())
-      .catch(() => ({ nodes: [], edges: [] }))
-    .then((network) => {
-      const nodeMap = new Map<string, GraphNode>();
+      .catch(() => ({ nodes: [], edges: [], communities: [], summary: {} }))
+      .then((data) => {
+        const nodeMap = new Map<string, GraphNode>();
 
-      // Add graph nodes
-      if (Array.isArray(network.nodes)) {
-        network.nodes.forEach((n: GraphNode) => {
-          nodeMap.set(n.id, { ...n, size: Math.min((n.centrality || 1) * 3 + 4, 20) });
+        if (Array.isArray(data.nodes)) {
+          data.nodes.forEach((n: GraphNode) => {
+            nodeMap.set(n.id, {
+              ...n,
+              size: Math.min((n.pagerank || 0.00001) * 80000 + 3, 25),
+            });
+          });
+        }
+
+        // Layout
+        const allNodes = Array.from(nodeMap.values());
+        const cx = 500, cy = 400;
+        allNodes.forEach((n, i) => {
+          const angle = (i / allNodes.length) * Math.PI * 2 * 3;
+          const r = 80 + i * 1.2;
+          n.x = cx + Math.cos(angle) * r;
+          n.y = cy + Math.sin(angle) * r;
         });
-      }
 
-      // Add network nodes
-      if (network.nodes && Array.isArray(network.nodes)) {
-        network.nodes.forEach((n: GraphNode) => {
-          if (!nodeMap.has(n.id)) {
-            nodeMap.set(n.id, { ...n, size: 6 });
-          }
-        });
-      }
+        setNodes(allNodes);
 
-      // Layout nodes in a force-directed-like circle/spiral
-      const allNodes = Array.from(nodeMap.values());
-      const cx = 500, cy = 400;
-      allNodes.forEach((n, i) => {
-        const angle = (i / allNodes.length) * Math.PI * 2 * 3; // spiral
-        const r = 80 + i * 1.2;
-        n.x = cx + Math.cos(angle) * r;
-        n.y = cy + Math.sin(angle) * r;
+        const allEdges: GraphEdge[] = [];
+        if (Array.isArray(data.edges)) {
+          data.edges.forEach((e: GraphEdge) => {
+            if (nodeMap.has(e.source) && nodeMap.has(e.target)) {
+              allEdges.push(e);
+            }
+          });
+        }
+        setEdges(allEdges);
+        setSummary(data.summary || {});
+        setLoading(false);
       });
-
-      setNodes(allNodes);
-
-      // Edges
-      const allEdges: GraphEdge[] = [];
-      if (network.edges && Array.isArray(network.edges)) {
-        network.edges.forEach((e: GraphEdge) => {
-          if (nodeMap.has(e.source) && nodeMap.has(e.target)) {
-            allEdges.push(e);
-          }
-        });
-      }
-      setEdges(allEdges);
-      setLoading(false);
-    });
   }, []);
 
   // Canvas rendering
@@ -147,7 +154,7 @@ export default function GraphPage() {
     nodes.forEach((n) => {
       if (n.x == null || n.y == null) return;
       const type = n.entity_type || n.type || "unknown";
-      const color = entityColorHex(type);
+      const color = n.community_id != null ? communityColor(n.community_id) : entityColorHex(type);
       const size = n.size || 5;
       const isMatch = !matchingIds || matchingIds.has(n.id);
       const isSelected = selectedNode?.id === n.id;
@@ -157,6 +164,15 @@ export default function GraphPage() {
       ctx.beginPath();
       ctx.arc(n.x, n.y, size, 0, Math.PI * 2);
       ctx.fill();
+
+      if (n.is_bridge) {
+        ctx.shadowColor = "#FFFFFF";
+        ctx.shadowBlur = 8;
+        ctx.strokeStyle = "#FFFFFF";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+      }
 
       if (isSelected) {
         ctx.strokeStyle = "#FFFFFF";
@@ -215,6 +231,11 @@ export default function GraphPage() {
       return next;
     });
   };
+
+  // Collect unique community IDs for legend
+  const communityIds = Array.from(
+    new Set(nodes.filter((n) => n.community_id != null).map((n) => n.community_id!))
+  ).sort((a, b) => a - b).slice(0, 15);
 
   return (
     <div className="relative w-full h-full bg-bg-deep">
@@ -325,9 +346,12 @@ export default function GraphPage() {
                   <div
                     className="w-3 h-3 rounded-full"
                     style={{
-                      backgroundColor: entityColorHex(
-                        selectedNode.entity_type || selectedNode.type || ""
-                      ),
+                      backgroundColor:
+                        selectedNode.community_id != null
+                          ? communityColor(selectedNode.community_id)
+                          : entityColorHex(
+                              selectedNode.entity_type || selectedNode.type || ""
+                            ),
                     }}
                   />
                   <span className="text-[10px] font-mono uppercase text-text-muted">
@@ -344,6 +368,27 @@ export default function GraphPage() {
               <h3 className="text-sm font-semibold mb-2">
                 {selectedNode.name || selectedNode.label || selectedNode.id}
               </h3>
+              {selectedNode.is_bridge && (
+                <div className="text-[10px] uppercase tracking-wider text-accent-violet font-semibold mb-2">
+                  Cross-Domain Bridge
+                </div>
+              )}
+              {selectedNode.pagerank != null && (
+                <div className="text-xs text-text-muted mb-1">
+                  PageRank:{" "}
+                  <span className="font-mono text-accent-cyan">
+                    {Number(selectedNode.pagerank).toFixed(6)}
+                  </span>
+                </div>
+              )}
+              {selectedNode.community_id != null && (
+                <div className="text-xs text-text-muted mb-1">
+                  Community:{" "}
+                  <span className="font-mono text-accent-cyan">
+                    #{selectedNode.community_id}
+                  </span>
+                </div>
+              )}
               {selectedNode.centrality != null && (
                 <div className="text-xs text-text-muted mb-2">
                   Centrality:{" "}
@@ -398,24 +443,40 @@ export default function GraphPage() {
               <span className="font-mono text-text-secondary">{edges.length.toLocaleString()}</span>
             </span>
             <span className="text-text-muted">
+              Communities:{" "}
+              <span className="font-mono text-text-secondary">{String(summary.communities || 0)}</span>
+            </span>
+            <span className="text-text-muted">
               Zoom: <span className="font-mono text-text-secondary">{zoom.toFixed(1)}x</span>
             </span>
           </div>
 
-          {/* Legend */}
+          {/* Community Color Legend */}
           <div className="absolute top-4 right-4 z-[5] glass rounded-xl p-3">
             <div className="text-[10px] uppercase tracking-wider text-text-muted mb-2 font-semibold">
-              Entity Types
+              Communities
             </div>
-            {["species", "infrastructure", "region", "event", "assessment", "flow"].map((t) => (
-              <div key={t} className="flex items-center gap-2 py-0.5">
-                <div
-                  className="w-2 h-2 rounded-full"
-                  style={{ backgroundColor: entityColorHex(t) }}
-                />
-                <span className="text-[10px] text-text-secondary capitalize">{t}</span>
-              </div>
-            ))}
+            {communityIds.length > 0 ? (
+              communityIds.map((cid) => (
+                <div key={cid} className="flex items-center gap-2 py-0.5">
+                  <div
+                    className="w-2 h-2 rounded-full"
+                    style={{ backgroundColor: communityColor(cid) }}
+                  />
+                  <span className="text-[10px] text-text-secondary">Community #{cid}</span>
+                </div>
+              ))
+            ) : (
+              ["species", "infrastructure", "region", "event", "assessment", "flow"].map((t) => (
+                <div key={t} className="flex items-center gap-2 py-0.5">
+                  <div
+                    className="w-2 h-2 rounded-full"
+                    style={{ backgroundColor: entityColorHex(t) }}
+                  />
+                  <span className="text-[10px] text-text-secondary capitalize">{t}</span>
+                </div>
+              ))
+            )}
           </div>
         </>
       )}

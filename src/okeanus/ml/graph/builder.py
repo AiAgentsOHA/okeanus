@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-import uuid
+import uuid as _uuid
 from typing import Any
 
 from sqlalchemy import select, text
@@ -13,6 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from okeanus.ml.graph.models import EdgeType, KnowledgeEdge, NodeType
 from okeanus.schema.economy import Entity, Relationship, TimeSeries
 from okeanus.transform.pipeline import TransformResult
+
+OKEANUS_NS = _uuid.UUID('a1b2c3d4-e5f6-7890-abcd-ef1234567890')
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +45,7 @@ class KnowledgeGraphBuilder:
             edge_type = self._map_rel_type(rel.get("relationship_type", "RELATES_TO"))
             edges.append(
                 {
-                    "id": uuid.uuid4(),
+                    "id": _uuid.uuid4(),
                     "source_id": src_id,
                     "source_type": NodeType.ENTITY.value,
                     "source_label": None,
@@ -67,7 +69,7 @@ class KnowledgeGraphBuilder:
                 continue
             edges.append(
                 {
-                    "id": uuid.uuid4(),
+                    "id": _uuid.uuid4(),
                     "source_id": entity_id,
                     "source_type": NodeType.ENTITY.value,
                     "source_label": None,
@@ -94,7 +96,7 @@ class KnowledgeGraphBuilder:
                         continue
                     edges.append(
                         {
-                            "id": uuid.uuid4(),
+                            "id": _uuid.uuid4(),
                             "source_id": ev_a["id"],
                             "source_type": NodeType.EVENT.value,
                             "source_label": ev_a.get("name"),
@@ -133,7 +135,7 @@ class KnowledgeGraphBuilder:
             edge_type = self._map_rel_type(rel.relationship_type)
             edges.append(
                 {
-                    "id": uuid.uuid4(),
+                    "id": _uuid.uuid4(),
                     "source_id": rel.source_entity_id,
                     "source_type": NodeType.ENTITY.value,
                     "source_label": None,
@@ -199,7 +201,7 @@ class KnowledgeGraphBuilder:
             strength = max(0.1, 1.0 - (dist_km / radius_km))
             edges.append(
                 {
-                    "id": uuid.uuid4(),
+                    "id": _uuid.uuid4(),
                     "source_id": row.a_id,
                     "source_type": NodeType.ENTITY.value,
                     "source_label": row.a_name,
@@ -321,7 +323,7 @@ class KnowledgeGraphBuilder:
         for row in all_rows:
             similarity = float(row.similarity)
             edges.append({
-                "id": uuid.uuid4(),
+                "id": _uuid.uuid4(),
                 "source_id": row.a_id,
                 "source_type": row.a_type,
                 "source_label": (row.a_text[:100] if row.a_text else None),
@@ -385,7 +387,7 @@ class KnowledgeGraphBuilder:
         """)
         rows = (await session.execute(sql, params)).fetchall()
 
-        code_to_node: dict[str, tuple[uuid.UUID, str]] = {}
+        code_to_node: dict[str, tuple[_uuid.UUID, str]] = {}
         for row in rows:
             code_to_node[row.code] = (row.ts_id, NodeType.TIMESERIES.value)
 
@@ -402,7 +404,7 @@ class KnowledgeGraphBuilder:
 
             corr_val = ev.get("correlation", 0)
             edges.append({
-                "id": uuid.uuid4(),
+                "id": _uuid.uuid4(),
                 "source_id": node_a[0],
                 "source_type": node_a[1],
                 "source_label": code_a,
@@ -430,6 +432,246 @@ class KnowledgeGraphBuilder:
             await session.execute(insert(KnowledgeEdge).values(edges))
         logger.info("Created %d correlation edges", len(edges))
         return len(edges)
+
+    # ------------------------------------------------------------------
+    # Batch insert helper
+    # ------------------------------------------------------------------
+
+    async def _batch_insert_edges(
+        self, session: AsyncSession, edges: list[dict[str, Any]]
+    ) -> int:
+        """Insert edges in batches with ON CONFLICT DO NOTHING."""
+        if not edges:
+            return 0
+        batch_size = 2000
+        for i in range(0, len(edges), batch_size):
+            stmt = insert(KnowledgeEdge).values(edges[i : i + batch_size])
+            stmt = stmt.on_conflict_do_nothing()
+            await session.execute(stmt)
+        return len(edges)
+
+    # ------------------------------------------------------------------
+    # Domain-aware edge builders
+    # ------------------------------------------------------------------
+
+    async def build_mmsi_edges(self, session: AsyncSession) -> int:
+        """Link entities sharing the same MMSI (vessel identity).
+
+        Handles double-nested payload (payload->'payload'->>'mmsi') and
+        AISStream identifiers (ais-{MMSI}-{timestamp}).
+        """
+        sql = text("""
+            WITH mmsi_entities AS (
+                SELECT id, name, source_name,
+                       COALESCE(
+                           payload->'payload'->>'mmsi',
+                           CASE WHEN source_name = 'AISStream'
+                                     AND identifier LIKE 'ais-%%'
+                                THEN split_part(identifier, '-', 2)
+                           END
+                       ) as mmsi
+                FROM entities
+                WHERE payload->'payload'->>'mmsi' IS NOT NULL
+                   OR (source_name = 'AISStream' AND identifier LIKE 'ais-%%')
+            )
+            SELECT DISTINCT a.id, a.name, b.id, b.name
+            FROM mmsi_entities a
+            JOIN mmsi_entities b ON a.id < b.id
+            WHERE a.mmsi = b.mmsi AND a.mmsi != ''
+              AND a.source_name != b.source_name
+            LIMIT 10000
+        """)
+        rows = (await session.execute(sql)).fetchall()
+        if not rows:
+            return 0
+        edges = []
+        for r in rows:
+            edges.append({
+                "id": _uuid.uuid4(),
+                "source_id": r[0], "source_type": NodeType.ENTITY.value,
+                "source_label": r[1],
+                "target_id": r[2], "target_type": NodeType.ENTITY.value,
+                "target_label": r[3],
+                "edge_type": EdgeType.IDENTITY.value,
+                "strength": 1.0,
+                "evidence_type": "mmsi_identity",
+                "evidence_detail": None, "domain": None, "payload": None,
+            })
+        return await self._batch_insert_edges(session, edges)
+
+    async def build_aphia_edges(self, session: AsyncSession) -> int:
+        """Link entities sharing same AphiaID (species taxonomy).
+
+        Payload is double-nested: payload->'payload'->>'aphia_id'.
+        """
+        sql = text("""
+            SELECT DISTINCT a.id, a.name, b.id, b.name
+            FROM entities a JOIN entities b ON a.id < b.id
+            WHERE (a.payload->'payload'->>'aphia_id') IS NOT NULL
+              AND (a.payload->'payload'->>'aphia_id') = (b.payload->'payload'->>'aphia_id')
+              AND a.source_name != b.source_name
+            LIMIT 7000
+        """)
+        rows = (await session.execute(sql)).fetchall()
+        if not rows:
+            return 0
+        edges = []
+        for r in rows:
+            edges.append({
+                "id": _uuid.uuid4(),
+                "source_id": r[0], "source_type": NodeType.ENTITY.value,
+                "source_label": r[1],
+                "target_id": r[2], "target_type": NodeType.ENTITY.value,
+                "target_label": r[3],
+                "edge_type": EdgeType.IS_A.value,
+                "strength": 1.0,
+                "evidence_type": "taxonomy_identity",
+                "evidence_detail": None, "domain": None, "payload": None,
+            })
+        return await self._batch_insert_edges(session, edges)
+
+    async def build_country_edges(self, session: AsyncSession) -> int:
+        """Link entities in same country but different entity_type or source.
+
+        Uses COALESCE to check both the country column and the nested
+        payload->'payload'->>'country' (which has 7K+ entries vs 100).
+        """
+        sql = text("""
+            WITH country_entities AS (
+                SELECT id, name, entity_type, source_name,
+                       COALESCE(
+                           NULLIF(country, ''),
+                           payload->'payload'->>'country'
+                       ) as resolved_country
+                FROM entities
+                WHERE country IS NOT NULL AND country != ''
+                   OR payload->'payload'->>'country' IS NOT NULL
+            )
+            SELECT src_id, src_name, tgt_id, tgt_name, resolved_country FROM (
+                SELECT a.id as src_id, a.name as src_name,
+                       b.id as tgt_id, b.name as tgt_name, a.resolved_country,
+                       ROW_NUMBER() OVER (PARTITION BY a.resolved_country) as rn
+                FROM country_entities a JOIN country_entities b ON a.id < b.id
+                WHERE a.resolved_country IS NOT NULL AND a.resolved_country != ''
+                  AND a.resolved_country = b.resolved_country
+                  AND (a.entity_type != b.entity_type OR a.source_name != b.source_name)
+            ) sub
+            WHERE rn <= 50
+            LIMIT 30000
+        """)
+        rows = (await session.execute(sql)).fetchall()
+        if not rows:
+            return 0
+        edges = []
+        for r in rows:
+            edges.append({
+                "id": _uuid.uuid4(),
+                "source_id": r[0], "source_type": NodeType.ENTITY.value,
+                "source_label": r[1],
+                "target_id": r[2], "target_type": NodeType.ENTITY.value,
+                "target_label": r[3],
+                "edge_type": EdgeType.OPERATES_IN.value,
+                "strength": 0.7,
+                "evidence_type": "same_country",
+                "evidence_detail": r[4], "domain": None, "payload": None,
+            })
+        return await self._batch_insert_edges(session, edges)
+
+    async def build_sector_edges(self, session: AsyncSession) -> int:
+        """Link entities in same sector but different source."""
+        sql = text("""
+            SELECT a.id, a.name, b.id, b.name
+            FROM entities a JOIN entities b ON a.id < b.id
+            WHERE a.sector IS NOT NULL AND a.sector != ''
+              AND a.sector = b.sector
+              AND a.source_name != b.source_name
+            LIMIT 8000
+        """)
+        rows = (await session.execute(sql)).fetchall()
+        if not rows:
+            return 0
+        edges = []
+        for r in rows:
+            edges.append({
+                "id": _uuid.uuid4(),
+                "source_id": r[0], "source_type": NodeType.ENTITY.value,
+                "source_label": r[1],
+                "target_id": r[2], "target_type": NodeType.ENTITY.value,
+                "target_label": r[3],
+                "edge_type": EdgeType.RELATES_TO.value,
+                "strength": 0.6,
+                "evidence_type": "same_sector",
+                "evidence_detail": None, "domain": None, "payload": None,
+            })
+        return await self._batch_insert_edges(session, edges)
+
+    async def build_regulatory_edges(self, session: AsyncSession) -> int:
+        """Cross-reference regulatory/sanctions entities with vessel entities.
+
+        Handles double-nested payload and AISStream identifier-encoded MMSI.
+        """
+        sql = text("""
+            SELECT s.id as sanction_id, s.name as sanction_name,
+                   v.id as vessel_id, v.name as vessel_name
+            FROM entities s
+            JOIN entities v ON s.id != v.id
+            WHERE s.source_name IN ('OFAC SDN', 'OpenSanctions', 'CLAV IUU', 'IUU Fishing Index')
+              AND v.source_name IN ('AISStream', 'World Port Index', 'Global Fishing Watch')
+              AND (
+                (s.payload->'payload'->>'mmsi' IS NOT NULL
+                 AND (s.payload->'payload'->>'mmsi' = v.payload->'payload'->>'mmsi'
+                      OR (v.source_name = 'AISStream'
+                          AND v.identifier LIKE 'ais-%%'
+                          AND s.payload->'payload'->>'mmsi' = split_part(v.identifier, '-', 2))))
+                OR (s.payload->'payload'->>'imo' IS NOT NULL
+                    AND s.payload->'payload'->>'imo' = v.payload->'payload'->>'imo')
+              )
+            LIMIT 2000
+        """)
+        rows = (await session.execute(sql)).fetchall()
+        if not rows:
+            return 0
+        edges = []
+        for r in rows:
+            edges.append({
+                "id": _uuid.uuid4(),
+                "source_id": r[2], "source_type": NodeType.ENTITY.value,
+                "source_label": r[3],
+                "target_id": r[0], "target_type": NodeType.ENTITY.value,
+                "target_label": r[1],
+                "edge_type": EdgeType.REGULATED_BY.value,
+                "strength": 0.9,
+                "evidence_type": "regulatory_match",
+                "evidence_detail": None, "domain": None, "payload": None,
+            })
+        return await self._batch_insert_edges(session, edges)
+
+    async def build_source_provenance_edges(self, session: AsyncSession) -> int:
+        """Create edges linking entities to their source adapter."""
+        sources = await session.execute(text(
+            "SELECT DISTINCT source_name FROM entities WHERE source_name IS NOT NULL"
+        ))
+        total = 0
+        for (source_name,) in sources.fetchall():
+            source_node_id = _uuid.uuid5(OKEANUS_NS, source_name)
+            entities = await session.execute(text(
+                "SELECT id, name FROM entities WHERE source_name = :sn LIMIT 500"
+            ), {"sn": source_name})
+            edges = []
+            for r in entities.fetchall():
+                edges.append({
+                    "id": _uuid.uuid4(),
+                    "source_id": r[0], "source_type": "entity",
+                    "source_label": r[1],
+                    "target_id": source_node_id, "target_type": "entity",
+                    "target_label": source_name,
+                    "edge_type": EdgeType.SOURCED_FROM.value,
+                    "strength": 0.5,
+                    "evidence_type": "source_provenance",
+                    "evidence_detail": source_name, "domain": None, "payload": None,
+                })
+            total += await self._batch_insert_edges(session, edges)
+        return total
 
     # ------------------------------------------------------------------
     # One-shot backfill pipeline
@@ -469,7 +711,67 @@ class KnowledgeGraphBuilder:
             logger.warning("Backfill spatial failed: %s", exc)
             counts["spatial"] = 0
 
-        # 3. Semantic similarity edges
+        # 3. MMSI identity edges
+        try:
+            counts["mmsi"] = await self.build_mmsi_edges(session)
+            await session.commit()
+            logger.info("Backfill: %d MMSI edges", counts["mmsi"])
+        except Exception as exc:
+            await session.rollback()
+            logger.warning("Backfill MMSI failed: %s", exc)
+            counts["mmsi"] = 0
+
+        # 4. AphiaID taxonomy edges
+        try:
+            counts["aphia"] = await self.build_aphia_edges(session)
+            await session.commit()
+            logger.info("Backfill: %d Aphia edges", counts["aphia"])
+        except Exception as exc:
+            await session.rollback()
+            logger.warning("Backfill Aphia failed: %s", exc)
+            counts["aphia"] = 0
+
+        # 5. Country edges
+        try:
+            counts["country"] = await self.build_country_edges(session)
+            await session.commit()
+            logger.info("Backfill: %d country edges", counts["country"])
+        except Exception as exc:
+            await session.rollback()
+            logger.warning("Backfill country failed: %s", exc)
+            counts["country"] = 0
+
+        # 6. Sector edges
+        try:
+            counts["sector"] = await self.build_sector_edges(session)
+            await session.commit()
+            logger.info("Backfill: %d sector edges", counts["sector"])
+        except Exception as exc:
+            await session.rollback()
+            logger.warning("Backfill sector failed: %s", exc)
+            counts["sector"] = 0
+
+        # 7. Regulatory edges
+        try:
+            counts["regulatory"] = await self.build_regulatory_edges(session)
+            await session.commit()
+            logger.info("Backfill: %d regulatory edges", counts["regulatory"])
+        except Exception as exc:
+            await session.rollback()
+            logger.warning("Backfill regulatory failed: %s", exc)
+            counts["regulatory"] = 0
+
+        # 8. Source provenance edges
+        try:
+            counts["provenance"] = await self.build_source_provenance_edges(session)
+            await session.commit()
+            logger.info("Backfill: %d provenance edges", counts["provenance"])
+        except Exception as exc:
+            await session.rollback()
+            logger.warning("Backfill provenance failed: %s", exc)
+            counts["provenance"] = 0
+
+        # 9. Semantic similarity edges
         try:
             counts["semantic"] = await self.build_semantic_edges(session)
             await session.commit()
@@ -479,7 +781,7 @@ class KnowledgeGraphBuilder:
             logger.warning("Backfill semantic failed: %s", exc)
             counts["semantic"] = 0
 
-        # 4. Correlation-discovered edges
+        # 10. Correlation-discovered edges
         if run_correlations:
             try:
                 from okeanus.ml.synthesis.correlator import CorrelationEngine

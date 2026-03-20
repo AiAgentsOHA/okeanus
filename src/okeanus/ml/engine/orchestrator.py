@@ -196,6 +196,25 @@ class IntelligenceOrchestrator:
         builder = KnowledgeGraphBuilder()
         return await builder.backfill_all(session, run_correlations=run_correlations)
 
+    async def generate_insights(
+        self,
+        session: AsyncSession,
+        max_communities: int = 5,
+        max_bridges: int = 10,
+    ) -> dict[str, Any]:
+        """Run UoT-powered insight generation on the knowledge graph."""
+        from okeanus.ml.graph.insight_generator import InsightGenerator
+        from okeanus.ml.graph.networkx_engine import get_engine
+
+        nx_engine = get_engine()
+        await nx_engine.ensure_built(session)
+
+        gen = InsightGenerator(
+            max_communities=max_communities,
+            max_bridges=max_bridges,
+        )
+        return await gen.generate_all(session, nx_engine)
+
     # -- Feedback loop --
 
     async def submit_feedback(

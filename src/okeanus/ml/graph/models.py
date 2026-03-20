@@ -25,6 +25,10 @@ class EdgeType(str, enum.Enum):
     CO_OCCURS = "CO_OCCURS"
     SPATIALLY_NEAR = "SPATIALLY_NEAR"
     CORRELATES_WITH = "CORRELATES_WITH"
+    IDENTITY = "IDENTITY"
+    OPERATES_IN = "OPERATES_IN"
+    REGULATED_BY = "REGULATED_BY"
+    SOURCED_FROM = "SOURCED_FROM"
 
 
 class NodeType(str, enum.Enum):
