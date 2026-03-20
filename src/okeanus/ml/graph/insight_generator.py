@@ -67,7 +67,7 @@ class InsightGenerator:
         from okeanus.ml.synthesis.insights import InsightManager
         from okeanus.ml.synthesis.uot import UniverseOfThoughts
 
-        uot = UniverseOfThoughts(prune_threshold=0.3, max_depth=2)
+        uot = UniverseOfThoughts(prune_threshold=0.3, max_depth=1)
         mgr = InsightManager()
         count = 0
 
@@ -119,7 +119,7 @@ class InsightGenerator:
                     await mgr.create_insight(
                         session,
                         insight_type=insight_type,
-                        title=content[:250],
+                        title=_extract_title(content),
                         description=content,
                         confidence=score,
                         involved_domains=domains,
@@ -154,7 +154,7 @@ class InsightGenerator:
         from okeanus.ml.synthesis.insights import InsightManager
         from okeanus.ml.synthesis.uot import UniverseOfThoughts
 
-        uot = UniverseOfThoughts(prune_threshold=0.3, max_depth=2)
+        uot = UniverseOfThoughts(prune_threshold=0.3, max_depth=1)
         mgr = InsightManager()
         count = 0
 
@@ -206,7 +206,7 @@ class InsightGenerator:
                     await mgr.create_insight(
                         session,
                         insight_type=insight_type,
-                        title=content[:250],
+                        title=_extract_title(content),
                         description=content,
                         confidence=t_score,
                         involved_domains=connected[:10],
@@ -231,6 +231,26 @@ class InsightGenerator:
                 logger.warning("UoT failed for bridge '%s': %s", label[:50], exc)
 
         return count
+
+
+def _extract_title(content: str, max_len: int = 250) -> str:
+    """Extract a clean title from UoT thought content (may be JSON)."""
+    import json as _json
+    try:
+        obj = _json.loads(content)
+        if isinstance(obj, dict):
+            # Try common keys for a short summary
+            for key in ("insight", "summary", "finding", "constraint", "original_finding",
+                        "original_assumption", "thesis", "hypothesis"):
+                if key in obj:
+                    return str(obj[key])[:max_len]
+            # Fallback: first string value
+            for v in obj.values():
+                if isinstance(v, str) and len(v) > 10:
+                    return v[:max_len]
+    except (_json.JSONDecodeError, TypeError):
+        pass
+    return content[:max_len]
 
 
 def _map_thought_type(thought_type: str) -> str:
