@@ -24,9 +24,15 @@ export default function AnalyticsPage() {
       fetch("/api/analytics/observations/sources").then((r) => r.json()).catch(() => []),
       fetch("/api/analytics/events/severity-trend").then((r) => r.json()).catch(() => []),
       fetch("/api/analytics/events/frequency").then((r) => r.json()).catch(() => []),
-      fetch("/api/analytics/assessments/ranking").then((r) => r.json()).catch(() => []),
-    ]).then(([entityDist, temporal, sources, severity, eventFreq, rankings]) => {
-      setData({ entityDist, temporal, sources, severity, eventFreq, rankings });
+    ]).then(([entityDist, temporal, sources, severity, eventFreq]) => {
+      setData({
+        entityDist: Array.isArray(entityDist) ? entityDist : [],
+        temporal: Array.isArray(temporal) ? temporal : [],
+        sources: Array.isArray(sources) ? sources : [],
+        severity: Array.isArray(severity) ? severity : [],
+        eventFreq: Array.isArray(eventFreq) ? eventFreq : [],
+        rankings: [],
+      });
       setLoading(false);
     });
   }, []);

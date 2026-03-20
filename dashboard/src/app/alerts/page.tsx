@@ -42,6 +42,84 @@ const SEV_COLORS: Record<string, string> = {
   LOW: "#64748B",
 };
 
+/* ===== Indicator Context Dictionary ===== */
+interface IndicatorMeta {
+  name: string;
+  domain: string;
+  significance: string;
+  icon: string;
+}
+
+const INDICATOR_CONTEXT: Record<string, IndicatorMeta> = {
+  DCOILWTICO: {
+    name: "WTI Crude Oil Price",
+    domain: "Energy Markets",
+    significance: "Oil price shifts directly impact maritime shipping costs, offshore drilling economics, and coastal state revenues. Sudden spikes signal geopolitical instability or supply disruptions affecting ocean transport routes.",
+    icon: "barrel",
+  },
+  DCOILBRENTEU: {
+    name: "Brent Crude Oil Price",
+    domain: "Energy Markets",
+    significance: "Brent crude is the global benchmark for 2/3 of oil pricing. Movements affect offshore platform economics, tanker traffic density, and the viability of deep-sea exploration in the North Sea, West Africa, and South America.",
+    icon: "barrel",
+  },
+  GASDESW: {
+    name: "Henry Hub Natural Gas Spot Price",
+    domain: "Energy Markets",
+    significance: "Natural gas price volatility signals changes in LNG tanker traffic volumes and offshore gas platform economics. Upward shifts may indicate increased seabed extraction and associated environmental impact.",
+    icon: "flame",
+  },
+  "nfip-claims": {
+    name: "NFIP Flood Insurance Claims",
+    domain: "Coastal Risk",
+    significance: "Spike in flood insurance claims indicates coastal flooding events linked to storm surge, sea level rise, or extreme weather. Directly measures economic impact of ocean-driven climate hazards on coastal populations.",
+    icon: "waves",
+  },
+  "sau-eez-taxon": {
+    name: "Sea Around Us — EEZ Fish Catch by Taxon",
+    domain: "Marine Biodiversity",
+    significance: "Changes in catch composition by species signal ecosystem regime shifts, overfishing pressure, or range migration due to warming waters. Critical for fisheries management and food security assessment.",
+    icon: "fish",
+  },
+  "AG.LND.FRST.ZS": {
+    name: "Forest Area (% of Land Area)",
+    domain: "Climate & Carbon",
+    significance: "Forest loss accelerates carbon emissions, increases coastal erosion and sedimentation that degrades marine habitats. Mangrove forest loss directly reduces coastal protection and nursery habitat for marine species.",
+    icon: "trees",
+  },
+  "NE.EXP.GNFS.ZS": {
+    name: "Exports of Goods & Services (% of GDP)",
+    domain: "Maritime Trade",
+    significance: "Export volume changes correlate with shipping traffic intensity and port congestion. Declining exports may signal trade disruptions that affect maritime logistics and the Blue Economy.",
+    icon: "ship",
+  },
+  "ER.MRN.PTMR.ZS": {
+    name: "Marine Protected Areas (% of Territorial Waters)",
+    domain: "Ocean Conservation",
+    significance: "Changes in MPA coverage directly measure progress toward SDG 14 (Life Below Water). Anomalies may indicate policy shifts in ocean governance, either expanding or weakening protections.",
+    icon: "shield",
+  },
+};
+
+function getIndicatorCode(title: string): string | null {
+  // Extract code from alert title like "Z-score anomaly in DCOILWTICO: z=3.40"
+  const match = title.match(/(?:anomaly in|point in)\s+([^:]+?):/);
+  return match ? match[1].trim() : null;
+}
+
+function getIndicatorMeta(title: string): IndicatorMeta | null {
+  const code = getIndicatorCode(title);
+  return code ? INDICATOR_CONTEXT[code] || null : null;
+}
+
+function formatAlertTitle(title: string): string {
+  const code = getIndicatorCode(title);
+  if (!code || !INDICATOR_CONTEXT[code]) return title;
+  const meta = INDICATOR_CONTEXT[code];
+  // Replace raw code with human-readable name
+  return title.replace(code, meta.name);
+}
+
 /* ===== Severity Trend Sparkline ===== */
 function SeveritySparkline({ alerts }: { alerts: Alert[] }) {
   const bins = useMemo(() => {
@@ -178,7 +256,7 @@ function TimelineView({
                         {a.alert_type || "general"}
                       </span>
                     </div>
-                    <p className="text-sm text-text-primary truncate">{a.title}</p>
+                    <p className="text-sm text-text-primary truncate">{formatAlertTitle(a.title)}</p>
                   </div>
                   {a.created_at && (
                     <span className="text-[10px] font-mono text-text-muted shrink-0">
@@ -437,8 +515,15 @@ export default function AlertsPage() {
                         {a.severity}
                       </span>
                     </td>
-                    <td className="px-4 py-3 text-sm text-text-primary truncate max-w-[400px]">
-                      {a.title}
+                    <td className="px-4 py-3 max-w-[400px]">
+                      <div className="text-sm text-text-primary truncate">{formatAlertTitle(a.title)}</div>
+                      {getIndicatorMeta(a.title) && (
+                        <div className="flex items-center gap-1.5 mt-0.5">
+                          <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-accent-blue/10 text-accent-blue border border-accent-blue/20">
+                            {getIndicatorMeta(a.title)!.domain}
+                          </span>
+                        </div>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-xs text-text-muted font-mono">
                       {a.alert_type || "general"}
@@ -476,33 +561,77 @@ export default function AlertsPage() {
             </button>
           </div>
 
-          <h2 className="text-lg font-semibold mb-3">{selected.title}</h2>
+          <h2 className="text-lg font-semibold mb-3">{formatAlertTitle(selected.title)}</h2>
+
+          {/* Indicator context banner */}
+          {(() => {
+            const meta = getIndicatorMeta(selected.title);
+            if (!meta) return null;
+            return (
+              <div className="bg-accent-blue/5 border border-accent-blue/20 rounded-xl p-4 mb-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-[10px] uppercase tracking-wider font-semibold text-accent-blue">
+                    {meta.domain}
+                  </span>
+                  <span className="text-text-muted">|</span>
+                  <span className="text-xs text-text-secondary font-semibold">{meta.name}</span>
+                </div>
+                <p className="text-xs text-text-secondary leading-relaxed">
+                  {meta.significance}
+                </p>
+              </div>
+            );
+          })()}
+
           <p className="text-sm text-text-secondary leading-relaxed mb-4">
             {selected.description}
           </p>
 
-          {selected.alert_type && (
-            <div className="flex items-center gap-2 mb-2 text-xs">
-              <span className="text-text-muted">Type:</span>
-              <span className="font-mono text-text-secondary">{selected.alert_type}</span>
-            </div>
-          )}
-          {selected.created_at && (
-            <div className="flex items-center gap-2 mb-4 text-xs">
-              <span className="text-text-muted">Created:</span>
-              <span className="font-mono text-text-secondary">
-                {new Date(selected.created_at).toLocaleString()}
-              </span>
-            </div>
-          )}
+          <div className="grid grid-cols-2 gap-2 mb-4">
+            {selected.alert_type && (
+              <div className="bg-bg-deep rounded-lg p-2.5">
+                <div className="text-[9px] uppercase tracking-wider text-text-muted mb-0.5">Type</div>
+                <div className="font-mono text-xs text-text-secondary">{selected.alert_type}</div>
+              </div>
+            )}
+            {selected.created_at && (
+              <div className="bg-bg-deep rounded-lg p-2.5">
+                <div className="text-[9px] uppercase tracking-wider text-text-muted mb-0.5">Detected</div>
+                <div className="font-mono text-xs text-text-secondary">
+                  {new Date(selected.created_at).toLocaleString()}
+                </div>
+              </div>
+            )}
+            {selected.payload?.value != null ? (
+              <div className="bg-bg-deep rounded-lg p-2.5">
+                <div className="text-[9px] uppercase tracking-wider text-text-muted mb-0.5">Value</div>
+                <div className="font-mono text-xs text-accent-cyan font-bold">
+                  {Number(selected.payload.value).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                </div>
+              </div>
+            ) : null}
+            {selected.payload?.direction ? (
+              <div className="bg-bg-deep rounded-lg p-2.5">
+                <div className="text-[9px] uppercase tracking-wider text-text-muted mb-0.5">Direction</div>
+                <div className={cn(
+                  "font-mono text-xs font-bold",
+                  String(selected.payload.direction) === "upward" ? "text-accent-emerald" : "text-accent-red"
+                )}>
+                  {String(selected.payload.direction) === "upward" ? "UPWARD SHIFT" : "DOWNWARD SHIFT"}
+                </div>
+              </div>
+            ) : null}
+          </div>
 
           {selected.payload && Object.keys(selected.payload).length > 0 && (
             <>
               <div className="text-[10px] uppercase tracking-wider text-text-muted font-semibold mb-2 mt-4">
-                Payload Data
+                Raw Signal Data
               </div>
               <div className="bg-bg-deep rounded-lg p-3 space-y-1.5">
-                {Object.entries(selected.payload).map(([k, v]) => (
+                {Object.entries(selected.payload)
+                  .filter(([k]) => !["value", "direction"].includes(k))
+                  .map(([k, v]) => (
                   <div key={k} className="flex justify-between text-xs">
                     <span className="text-text-muted">{k}</span>
                     <span className="text-text-secondary font-mono truncate max-w-[180px]">
