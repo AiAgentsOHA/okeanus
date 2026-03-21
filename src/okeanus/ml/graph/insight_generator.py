@@ -116,7 +116,7 @@ class InsightGenerator:
                         continue
 
                     insight_type = _map_thought_type(thought_type)
-                    await mgr.create_insight(
+                    insight = await mgr.create_insight(
                         session,
                         insight_type=insight_type,
                         title=_extract_title(content),
@@ -129,10 +129,28 @@ class InsightGenerator:
                             "community_size": size,
                             "entity_types": entity_types,
                             "sources": list(sources.keys())[:10],
-                            "thought_graph": result.get("summary", {}),
+                            "thought_graph": result.get("thought_graph", {}),
                         },
                     )
                     count += 1
+
+                    # Wire reasoning traces — capture UoT provenance
+                    await mgr.add_trace(
+                        session, insight.id,
+                        phase=f"uot_{thought_type}",
+                        input_text=f"Topic: {topic}\nEvidence: {evidence}",
+                        output_text=content[:4000],
+                    )
+                    # Store depth stats as pipeline trace
+                    depth_stats = result.get("depth_stats", [])
+                    if depth_stats:
+                        import json as _json
+                        await mgr.add_trace(
+                            session, insight.id,
+                            phase="uot_pipeline",
+                            input_text=f"Community {cid}, {size} entities, {len(domains)} domains",
+                            output_text=_json.dumps(depth_stats)[:4000],
+                        )
 
                 logger.info(
                     "Generated %d insights for community %d (%d entities)",
@@ -203,7 +221,7 @@ class InsightGenerator:
                         continue
 
                     insight_type = _map_thought_type(thought_type)
-                    await mgr.create_insight(
+                    insight = await mgr.create_insight(
                         session,
                         insight_type=insight_type,
                         title=_extract_title(content),
@@ -217,10 +235,27 @@ class InsightGenerator:
                             "bridge_domain": domain,
                             "connected_domains": connected,
                             "bridge_score": score,
-                            "thought_graph": result.get("summary", {}),
+                            "thought_graph": result.get("thought_graph", {}),
                         },
                     )
                     count += 1
+
+                    # Wire reasoning traces — capture UoT provenance
+                    await mgr.add_trace(
+                        session, insight.id,
+                        phase=f"uot_{thought_type}",
+                        input_text=f"Topic: {topic}\nEvidence: {evidence}",
+                        output_text=content[:4000],
+                    )
+                    depth_stats = result.get("depth_stats", [])
+                    if depth_stats:
+                        import json as _json
+                        await mgr.add_trace(
+                            session, insight.id,
+                            phase="uot_pipeline",
+                            input_text=f"Bridge '{label}', {len(connected)} domains",
+                            output_text=_json.dumps(depth_stats)[:4000],
+                        )
 
                 logger.info(
                     "Generated %d insights for bridge '%s'",

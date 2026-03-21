@@ -115,7 +115,11 @@ class CoralBleachingAdapter(BaseAdapter):
             if ts is None:
                 continue
 
-            if ts < time_start or ts > time_end:
+            # Normalize timezone awareness for comparison
+            ts_cmp = ts.replace(tzinfo=None) if ts.tzinfo else ts
+            t_start = time_start.replace(tzinfo=None) if time_start.tzinfo else time_start
+            t_end = time_end.replace(tzinfo=None) if time_end.tzinfo else time_end
+            if ts_cmp < t_start or ts_cmp > t_end:
                 continue
 
             # Parse bleaching percentage

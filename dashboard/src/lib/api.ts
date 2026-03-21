@@ -81,6 +81,53 @@ export const getRelationshipCentrality = () =>
 export const getRelationshipComponents = () =>
   fetchJSON<unknown[]>("/analytics/relationships/components");
 
+// Decision Tree / Lineage
+export interface DecisionTree {
+  entity_id: string;
+  entity?: {
+    id: string;
+    name: string;
+    entity_type: string;
+    source_name: string;
+    sector?: string;
+    country?: string;
+    lat?: number;
+    lon?: number;
+  };
+  layers: {
+    name: string;
+    label: string;
+    nodes?: unknown[];
+    edges?: unknown[];
+    count?: number;
+    community?: {
+      community_id: number;
+      size: number;
+      pagerank?: number;
+      centrality?: number;
+    } | null;
+    insights?: {
+      id: string;
+      insight_type: string;
+      title: string;
+      description: string;
+      confidence: number;
+      generator: string;
+      status: string;
+      created_at?: string;
+      reasoning_traces: {
+        id: string;
+        phase: string;
+        input_text: string;
+        output_text: string;
+      }[];
+    }[];
+  }[];
+  error?: string;
+}
+export const getDecisionTree = (entityId: string) =>
+  fetchJSON<DecisionTree>(`/lineage/tree/${entityId}`);
+
 // Search
 export interface SearchResult {
   id: string;

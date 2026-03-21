@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { GitBranch, Database, ArrowRight, Layers, Eye } from "lucide-react";
 import { cn } from "@/lib/utils";
+import DecisionTreeView from "@/components/DecisionTree";
 
 interface Source {
   source_name: string;
@@ -208,6 +209,14 @@ export default function LineagePage() {
           </div>
         </div>
       )}
+
+      {/* Decision Tree — Entity Provenance Tracer */}
+      <div className="mt-6 bg-bg-surface border border-white/5 rounded-xl p-6">
+        <div className="text-[10px] uppercase tracking-wider text-text-muted font-semibold mb-4">
+          Decision Provenance Tree
+        </div>
+        <DecisionTreeView />
+      </div>
     </div>
   );
 }
