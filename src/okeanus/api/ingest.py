@@ -175,6 +175,24 @@ async def ingest_from_source(
 
             await session.commit()
 
+            # --- Lineage tracking ---
+            try:
+                from okeanus.ml.lineage import LineageTracker
+                tracker = LineageTracker()
+                all_obs_ids = []
+                if other_records:
+                    for obs in observations:
+                        if hasattr(obs, "id") and obs.id:
+                            all_obs_ids.append(obs.id)
+                if all_obs_ids:
+                    await tracker.record_ingestion(
+                        session, source_name=source, adapter_name=source,
+                        observation_ids=all_obs_ids[:100],  # cap to avoid overhead
+                    )
+                    await session.commit()
+            except Exception as exc:
+                logger.debug("Lineage tracking skipped: %s", exc)
+
     logger.info("Ingested %d records from %s", len(records), source)
     return {
         "source": source,

@@ -177,6 +177,19 @@ async def entities_density(
     return await _run(duck.entity_density, resolution=resolution)
 
 
+@router.get("/hotspots")
+async def hotspots(
+    resolution: Annotated[float, Query(ge=0.1, le=10.0)] = 2.0,
+    min_count: Annotated[int, Query(ge=1)] = 10,
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+) -> list[dict[str, Any]]:
+    """Return geographic hotspot clusters where entity density exceeds min_count."""
+    grids = await _run(duck.entity_density, resolution=resolution)
+    hotspot_list = [g for g in grids if g.get("count", 0) >= min_count]
+    hotspot_list.sort(key=lambda g: g.get("count", 0), reverse=True)
+    return hotspot_list[:limit]
+
+
 # ===================================================================
 # Flows
 # ===================================================================

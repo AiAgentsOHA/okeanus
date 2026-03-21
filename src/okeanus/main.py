@@ -161,6 +161,36 @@ except ImportError:
     pass  # ml extras not installed
 
 
+# Search endpoint (no prefix — frontend calls /search directly)
+@app.post("/search")
+async def search_entities(body: dict) -> list[dict]:
+    """Full-text search across entities by name."""
+    from sqlalchemy import text as sa_text
+    from okeanus.db.postgres import async_session_factory
+
+    query = body.get("query", "")
+    limit = min(body.get("limit", 10), 100)
+    if not query or len(query) < 2:
+        return []
+
+    async with async_session_factory() as session:
+        result = await session.execute(
+            sa_text("""
+                SELECT id, entity_type, name,
+                       ST_Y(ST_Centroid(geometry)) AS latitude,
+                       ST_X(ST_Centroid(geometry)) AS longitude,
+                       similarity(name, :q) AS score
+                FROM entities
+                WHERE name ILIKE :pattern
+                ORDER BY score DESC
+                LIMIT :lim
+            """),
+            {"q": query, "pattern": f"%{query}%", "lim": limit},
+        )
+        rows = result.mappings().all()
+        return [dict(r) for r in rows]
+
+
 # Static frontend (Deck.gl map)
 import pathlib as _pathlib  # noqa: E402
 

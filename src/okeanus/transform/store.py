@@ -118,4 +118,28 @@ async def store_transform_result(
         import logging
         logging.getLogger(__name__).warning("Graph builder hook failed: %s", exc)
 
+    # -- Lineage tracking for transformed records --
+    try:
+        from okeanus.ml.lineage import LineageTracker
+        tracker = LineageTracker()
+        entity_ids = [d["id"] for d in result.entities if "id" in d] if result.entities else []
+        event_ids = [d["id"] for d in result.events if "id" in d] if result.events else []
+        flow_ids = [d["id"] for d in result.flows if "id" in d] if result.flows else []
+        ts_ids = [d["id"] for d in result.time_series if "id" in d] if result.time_series else []
+        if entity_ids or event_ids or flow_ids or ts_ids:
+            source_name = result.entities[0].get("source_name", "unknown") if result.entities else "unknown"
+            await tracker.record_promotion(
+                session,
+                mapper_name=source_name,
+                observation_ids=[],  # no upstream obs for direct transforms
+                entity_ids=entity_ids[:100],
+                event_ids=event_ids[:100],
+                flow_ids=flow_ids[:100],
+                ts_ids=ts_ids[:100],
+            )
+            counts["lineage_nodes"] = len(entity_ids) + len(event_ids) + len(flow_ids) + len(ts_ids)
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).debug("Lineage tracking skipped: %s", exc)
+
     return counts

@@ -182,7 +182,7 @@ export default function GlobePage() {
         .then((r) => r.json())
         .then((d) => { if (Array.isArray(d)) setHotspots(d); })
         .catch(() => {}),
-      fetch("/api/analytics/density")
+      fetch("/api/analytics/entities/density")
         .then((r) => r.json())
         .then((d) => { if (Array.isArray(d)) setDensity(d); })
         .catch(() => {}),

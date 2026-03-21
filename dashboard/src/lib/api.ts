@@ -35,7 +35,7 @@ export const getLineageSources = () =>
 
 // Analytics - Spatial
 export const getHotspots = () => fetchJSON<unknown[]>("/analytics/hotspots");
-export const getDensity = () => fetchJSON<unknown[]>("/analytics/density");
+export const getDensity = () => fetchJSON<unknown[]>("/analytics/entities/density");
 export const getSpatialClusters = () =>
   fetchJSON<unknown[]>("/analytics/spatial-clusters");
 export const getTrajectories = () =>
@@ -105,7 +105,7 @@ export function investigate(
   onDone: () => void
 ) {
   const controller = new AbortController();
-  fetch(`${BASE}/investigate`, {
+  fetch(`${BASE}/ml/investigate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ query }),

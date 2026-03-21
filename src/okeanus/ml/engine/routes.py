@@ -158,3 +158,67 @@ async def auto_resolve(
         if not dry_run:
             await session.commit()
     return result
+
+
+# -- Full pipeline: sync → embed → backfill → rebuild NetworkX --
+
+
+@router.post("/pipeline/run")
+async def run_full_pipeline(
+    skip_embed: bool = False,
+    skip_backfill: bool = False,
+    run_correlations: bool = False,
+) -> dict[str, Any]:
+    """Run the full intelligence pipeline end-to-end.
+
+    Steps: DuckDB sync → embedding build → graph backfill → NetworkX rebuild.
+    Each step is optional and failures are logged but don't block the next step.
+    """
+    import logging
+    _log = logging.getLogger(__name__)
+    pipeline_result: dict[str, Any] = {"steps": []}
+
+    # Step 1: DuckDB sync (fast — copies PG tables for analytics)
+    try:
+        from okeanus.db import duckdb as duck
+        counts = duck.sync_from_postgres()
+        pipeline_result["steps"].append({"step": "duckdb_sync", "status": "ok", "tables": counts})
+    except Exception as exc:
+        _log.warning("Pipeline: DuckDB sync failed: %s", exc)
+        pipeline_result["steps"].append({"step": "duckdb_sync", "status": "error", "detail": str(exc)})
+
+    # Step 2: Build embeddings
+    if not skip_embed:
+        try:
+            from okeanus.ml.vectors.indexer import EmbeddingIndexer
+            indexer = EmbeddingIndexer()
+            async with get_session() as session:
+                count = await indexer.build_full_index(session)
+            pipeline_result["steps"].append({"step": "embeddings", "status": "ok", "embedded": count})
+        except Exception as exc:
+            _log.warning("Pipeline: Embedding build failed: %s", exc)
+            pipeline_result["steps"].append({"step": "embeddings", "status": "error", "detail": str(exc)})
+
+    # Step 3: Graph backfill (spatial, identity, semantic edges)
+    if not skip_backfill:
+        try:
+            async with get_session() as session:
+                edge_counts = await orchestrator.run_backfill(session, run_correlations=run_correlations)
+            pipeline_result["steps"].append({"step": "graph_backfill", "status": "ok", "edges": edge_counts})
+        except Exception as exc:
+            _log.warning("Pipeline: Graph backfill failed: %s", exc)
+            pipeline_result["steps"].append({"step": "graph_backfill", "status": "error", "detail": str(exc)})
+
+    # Step 4: Rebuild NetworkX cache
+    try:
+        from okeanus.ml.graph.networkx_engine import NetworkXEngine
+        engine = NetworkXEngine()
+        async with get_session() as session:
+            summary = await engine.rebuild(session)
+        pipeline_result["steps"].append({"step": "networkx_rebuild", "status": "ok", "summary": summary})
+    except Exception as exc:
+        _log.warning("Pipeline: NetworkX rebuild failed: %s", exc)
+        pipeline_result["steps"].append({"step": "networkx_rebuild", "status": "error", "detail": str(exc)})
+
+    pipeline_result["status"] = "complete"
+    return pipeline_result
