@@ -92,8 +92,10 @@ async def decision_tree(
     # Layer 4: Community membership (from NetworkX in-memory engine)
     community_info = None
     try:
-        from okeanus.ml.graph.networkx_engine import NetworkXEngine
-        engine = NetworkXEngine()
+        from okeanus.ml.graph.networkx_engine import get_engine
+        engine = get_engine()
+        if engine.is_stale:
+            await engine.ensure_built(session)
         metrics = engine._metrics
         community_id = metrics.get("community", {}).get(str(entity_id))
         if community_id is not None:
@@ -113,26 +115,32 @@ async def decision_tree(
         "community": community_info,
     })
 
-    # Layer 5: Insights that reference this entity (via evidence JSONB or involved_domains)
-    insight_rows = (await session.execute(text("""
-        SELECT id, insight_type, title, description, confidence, generator,
-               evidence, involved_domains, status, created_at
-        FROM insights
-        WHERE evidence::text ILIKE :pattern
-        ORDER BY confidence DESC
-        LIMIT 20
-    """), {"pattern": f"%{str(entity_id)}%"})).fetchall()
+    # Layer 5: Insights linked to this entity's community or matching its domain
+    insight_rows = []
 
-    # Also search by source_name or entity name
-    if not insight_rows and ent_row.source_name:
+    # First try: match by community_id in generator or evidence
+    if community_info and community_info.get("community_id") is not None:
+        cid = community_info["community_id"]
         insight_rows = (await session.execute(text("""
             SELECT id, insight_type, title, description, confidence, generator,
                    evidence, involved_domains, status, created_at
             FROM insights
             WHERE generator ILIKE :gen_pattern
+               OR (evidence->>'community_id')::int = :cid
             ORDER BY confidence DESC
             LIMIT 20
-        """), {"gen_pattern": f"%community-{community_info['community_id']}%" if community_info else "%none%"})).fetchall()
+        """), {"gen_pattern": f"%community-{cid}%", "cid": cid})).fetchall()
+
+    # Fallback: match by entity_type in involved_domains
+    if not insight_rows and ent_row.entity_type:
+        insight_rows = (await session.execute(text("""
+            SELECT id, insight_type, title, description, confidence, generator,
+                   evidence, involved_domains, status, created_at
+            FROM insights
+            WHERE :etype = ANY(involved_domains)
+            ORDER BY confidence DESC
+            LIMIT 10
+        """), {"etype": ent_row.entity_type})).fetchall()
 
     insights_out = []
     for r in insight_rows:

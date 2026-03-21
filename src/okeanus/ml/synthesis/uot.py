@@ -440,12 +440,20 @@ class UniverseOfThoughts:
             return engine.get_bridges(top_k)
         except Exception as exc:
             logger.debug("Could not fetch bridges: %s", exc)
+            try:
+                await session.rollback()
+            except Exception:
+                pass
             # Fallback to old method
             try:
                 from okeanus.ml.graph.algorithms import GraphAlgorithms
                 algos = GraphAlgorithms()
                 return await algos.cross_domain_bridges(session, top_k=top_k)
             except Exception:
+                try:
+                    await session.rollback()
+                except Exception:
+                    pass
                 return []
 
     async def _fetch_unexplored(
@@ -466,6 +474,10 @@ class UniverseOfThoughts:
             )
         except Exception as exc:
             logger.debug("Could not fetch unexplored regions: %s", exc)
+            try:
+                await session.rollback()
+            except Exception:
+                pass
             return []
 
     async def _fetch_assumptions(
@@ -543,6 +555,10 @@ class UniverseOfThoughts:
 
         except Exception as exc:
             logger.debug("Could not fetch assumptions from KG: %s", exc)
+            try:
+                await session.rollback()
+            except Exception:
+                pass
             return []
 
     async def c_uot_analogies(
@@ -985,18 +1001,17 @@ class UniverseOfThoughts:
     ) -> dict[str, Any]:
         """Run full UoT pipeline with thought graph, pruning, and recursive deepening.
 
-        Pipeline per depth:
-        C-UoT -> score -> prune ->
-        E-UoT -> score -> prune ->
-        T-UoT -> score -> prune ->
-        D-UoT (dialectical) -> score -> prune ->
-        CF-UoT (counterfactual) -> score -> prune ->
-        AB-UoT (abductive) -> score -> prune ->
-        RT-UoT (red team) -> score -> prune ->
-        CR-UoT (constraint relaxation) -> score -> prune
+        All 8 reasoning strategies run in parallel waves based on dependencies:
+        Wave 1: C + T (independent — analogies use bridges, transform uses KG)
+        Wave 2: E (uses C results as parent seeds)
+        Wave 3: D + CF + AB (all read graph.top_k, independent of each other)
+        Wave 4: RT (attacks top hypotheses, adjusts scores)
+        Wave 5: CR (uses final graph state)
 
-        Then deepen: take top thoughts and run another cycle on them.
+        5 sequential waves instead of 8, with parallel LLM calls within waves.
         """
+        import asyncio as _asyncio
+
         graph = ThoughtGraph(prune_threshold=self._prune_threshold)
         depth_stats: list[dict[str, Any]] = []
 
@@ -1005,109 +1020,90 @@ class UniverseOfThoughts:
             total_pruned = 0
             step_counts: dict[str, int] = {}
 
-            # Helper: run a strategy step with error isolation
+            _depth = depth  # capture for closures
+
             async def _run_step(
                 name: str,
                 coro,
-            ) -> list[Thought]:
+            ) -> tuple[str, list[Thought]]:
                 try:
                     thoughts = await coro
                     scored = await self._score_thoughts(thoughts)
-                    return scored
+                    return name, scored
                 except Exception as exc:
-                    logger.warning("Strategy %s failed at depth %d: %s", name, depth, exc)
-                    return []
+                    logger.warning("Strategy %s failed at depth %d: %s", name, _depth, exc)
+                    return name, []
 
-            # -- Step 1: C-UoT — Cross-domain analogies --
-            c_thoughts = await _run_step("C", self.c_uot_analogies(
-                topic,
-                domains[0] if domains else "general",
-                domains[1:] or ["economics", "ecology"],
-                graph,
-                session=session,
-                context=evidence[:500] if depth == 0 else "",
-            ))
+            ctx = evidence[:500] if depth == 0 else ""
+
+            # -- Wave 1: C + T in parallel (independent) --
+            logger.info("Wave 1: C + T (parallel)")
+            wave1 = await _asyncio.gather(
+                _run_step("C", self.c_uot_analogies(
+                    topic,
+                    domains[0] if domains else "general",
+                    domains[1:] or ["economics", "ecology"],
+                    graph, session=session, context=ctx,
+                )),
+                _run_step("T", self.t_uot_transform(
+                    topic, graph, parent_ids=None,
+                    session=session, context=ctx,
+                )),
+            )
+            for name, thoughts in wave1:
+                step_counts[name] = len(thoughts)
             total_pruned += graph.prune()
-            step_counts["C"] = len(c_thoughts)
 
-            # -- Step 2: E-UoT — Expand exploration --
+            # -- Wave 2: E (uses C results as parents) --
+            logger.info("Wave 2: E")
             surviving_ids = [t.id for t in graph.by_type("C")]
-            e_thoughts = await _run_step("E", self.e_uot_expand(
+            _, e_thoughts = await _run_step("E", self.e_uot_expand(
                 [{"finding": topic, "evidence": evidence[:500]}]
                 if depth == 0
                 else [t.to_dict() for t in graph.top_k(5)],
-                explored_domains=domains,
-                graph=graph,
-                parent_ids=surviving_ids or None,
-                session=session,
+                explored_domains=domains, graph=graph,
+                parent_ids=surviving_ids or None, session=session,
             ))
-            total_pruned += graph.prune()
             step_counts["E"] = len(e_thoughts)
-
-            # -- Step 3: T-UoT — Transform assumptions --
-            surviving_ids = [t.id for t in graph.top_k(5)]
-            t_thoughts = await _run_step("T", self.t_uot_transform(
-                topic,
-                graph,
-                parent_ids=surviving_ids or None,
-                session=session,
-                context=evidence[:500] if depth == 0 else "",
-            ))
             total_pruned += graph.prune()
-            step_counts["T"] = len(t_thoughts)
 
-            # -- Step 4: D-UoT — Dialectical reasoning --
+            # -- Wave 3: D + CF + AB in parallel (all read graph.top_k) --
+            logger.info("Wave 3: D + CF + AB (parallel)")
             surviving_ids = [t.id for t in graph.top_k(5)]
-            d_thoughts = await _run_step("D", self.d_uot_dialectic(
-                graph,
-                parent_ids=surviving_ids or None,
-                context=evidence[:500] if depth == 0 else "",
-            ))
+            wave3 = await _asyncio.gather(
+                _run_step("D", self.d_uot_dialectic(
+                    graph, parent_ids=surviving_ids or None, context=ctx,
+                )),
+                _run_step("CF", self.cf_uot_counterfactual(
+                    topic, graph, parent_ids=surviving_ids or None, context=ctx,
+                )),
+                _run_step("AB", self.ab_uot_abductive(
+                    anomalies or [], graph,
+                    parent_ids=surviving_ids or None, context=ctx,
+                )),
+            )
+            for name, thoughts in wave3:
+                step_counts[name] = len(thoughts)
             total_pruned += graph.prune()
-            step_counts["D"] = len(d_thoughts)
 
-            # -- Step 5: CF-UoT — Counterfactual reasoning --
+            # -- Wave 4: RT (attacks top hypotheses, adjusts scores) --
+            logger.info("Wave 4: RT")
             surviving_ids = [t.id for t in graph.top_k(5)]
-            cf_thoughts = await _run_step("CF", self.cf_uot_counterfactual(
-                topic,
-                graph,
-                parent_ids=surviving_ids or None,
-                context=evidence[:500] if depth == 0 else "",
+            _, rt_thoughts = await _run_step("RT", self.rt_uot_red_team(
+                graph, parent_ids=surviving_ids or None,
             ))
-            total_pruned += graph.prune()
-            step_counts["CF"] = len(cf_thoughts)
-
-            # -- Step 6: AB-UoT — Abductive reasoning --
-            surviving_ids = [t.id for t in graph.top_k(5)]
-            ab_thoughts = await _run_step("AB", self.ab_uot_abductive(
-                anomalies or [],
-                graph,
-                parent_ids=surviving_ids or None,
-                context=evidence[:500] if depth == 0 else "",
-            ))
-            total_pruned += graph.prune()
-            step_counts["AB"] = len(ab_thoughts)
-
-            # -- Step 7: RT-UoT — Red team / adversarial --
-            surviving_ids = [t.id for t in graph.top_k(5)]
-            rt_thoughts = await _run_step("RT", self.rt_uot_red_team(
-                graph,
-                parent_ids=surviving_ids or None,
-            ))
-            total_pruned += graph.prune()
             step_counts["RT"] = len(rt_thoughts)
-
-            # -- Step 8: CR-UoT — Constraint relaxation --
-            surviving_ids = [t.id for t in graph.top_k(5)]
-            cr_thoughts = await _run_step("CR", self.cr_uot_constraint_relax(
-                topic,
-                constraints or [],
-                graph,
-                parent_ids=surviving_ids or None,
-                context=evidence[:500] if depth == 0 else "",
-            ))
             total_pruned += graph.prune()
+
+            # -- Wave 5: CR (uses final graph state) --
+            logger.info("Wave 5: CR")
+            surviving_ids = [t.id for t in graph.top_k(5)]
+            _, cr_thoughts = await _run_step("CR", self.cr_uot_constraint_relax(
+                topic, constraints or [], graph,
+                parent_ids=surviving_ids or None, context=ctx,
+            ))
             step_counts["CR"] = len(cr_thoughts)
+            total_pruned += graph.prune()
 
             depth_stats.append({
                 "depth": depth,

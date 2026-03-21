@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Any
@@ -14,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 # Module-level singleton
 _engine: NetworkXEngine | None = None
+_build_lock = asyncio.Lock()
 
 
 def get_engine() -> NetworkXEngine:
@@ -21,6 +23,12 @@ def get_engine() -> NetworkXEngine:
     if _engine is None:
         _engine = NetworkXEngine()
     return _engine
+
+
+def set_engine(engine: NetworkXEngine) -> None:
+    """Register a pre-built engine as the module singleton."""
+    global _engine
+    _engine = engine
 
 
 class NetworkXEngine:
@@ -37,7 +45,10 @@ class NetworkXEngine:
     async def ensure_built(self, session: AsyncSession) -> None:
         if not self.is_stale:
             return
-        await self.rebuild(session)
+        async with _build_lock:
+            if not self.is_stale:  # double-check after acquiring lock
+                return
+            await self.rebuild(session)
 
     async def rebuild(self, session: AsyncSession) -> dict[str, int]:
         G = nx.Graph()
