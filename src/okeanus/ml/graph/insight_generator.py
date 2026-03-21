@@ -120,7 +120,7 @@ class InsightGenerator:
                         session,
                         insight_type=insight_type,
                         title=_extract_title(content),
-                        description=content,
+                        description=content[:4000],
                         confidence=score,
                         involved_domains=domains,
                         generator=f"UoT-{thought_type}-community-{cid}",
@@ -129,7 +129,7 @@ class InsightGenerator:
                             "community_size": size,
                             "entity_types": entity_types,
                             "sources": list(sources.keys())[:10],
-                            "thought_graph": result.get("thought_graph", {}),
+                            "thought_types": list(result.get("depth_stats", [{}])[0].get("step_counts", {}).keys()) if result.get("depth_stats") else [],
                         },
                     )
                     count += 1
@@ -225,7 +225,7 @@ class InsightGenerator:
                         session,
                         insight_type=insight_type,
                         title=_extract_title(content),
-                        description=content,
+                        description=content[:4000],
                         confidence=t_score,
                         involved_domains=connected[:10],
                         generator=f"UoT-{thought_type}-bridge-{bridge.get('id', '')[:8]}",
@@ -235,7 +235,7 @@ class InsightGenerator:
                             "bridge_domain": domain,
                             "connected_domains": connected,
                             "bridge_score": score,
-                            "thought_graph": result.get("thought_graph", {}),
+                            "thought_types": list(result.get("depth_stats", [{}])[0].get("step_counts", {}).keys()) if result.get("depth_stats") else [],
                         },
                     )
                     count += 1
